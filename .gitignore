@@ -1,0 +1,28 @@
+# Composer
+/vendor/
+composer.lock
+
+# PHPUnit
+/.phpunit.cache/
+/.phpunit.result.cache
+/build/
+/coverage/
+
+# Pint
+/.pint.cache
+
+# IDE / editor noise
+/.idea/
+/.vscode/
+/.fleet/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# OS noise
+._*
+
+# Local dev artefacts
+.env
+*.log
