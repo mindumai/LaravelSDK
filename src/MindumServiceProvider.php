@@ -5,28 +5,26 @@ declare(strict_types=1);
 namespace Mindum\Laravel;
 
 use Illuminate\Support\ServiceProvider;
+use Mindum\Laravel\Commands\ChatCommand;
+use Mindum\Laravel\Commands\InstallCommand;
+use Mindum\Laravel\Commands\RescanCommand;
+use Mindum\Laravel\Commands\StatusCommand;
 
 /**
  * Mindum Laravel SDK service provider.
  *
  * Auto-discovered by Laravel via composer.json's extra.laravel.providers.
- * Handles config publishing, command registration, and MCP tool registration
- * once the customer has run `mindum:install`.
+ * Handles config publishing, command registration, and (post-Phase E)
+ * MCP tool registration.
  */
 class MindumServiceProvider extends ServiceProvider
 {
-    /**
-     * Bootstrap package services.
-     */
     public function boot(): void
     {
         $this->registerConfig();
         $this->registerCommands();
     }
 
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
         $this->mergeConfigFrom(
@@ -35,9 +33,6 @@ class MindumServiceProvider extends ServiceProvider
         );
     }
 
-    /**
-     * Publish the package config to the host app's config directory.
-     */
     protected function registerConfig(): void
     {
         if ($this->app->runningInConsole()) {
@@ -47,9 +42,6 @@ class MindumServiceProvider extends ServiceProvider
         }
     }
 
-    /**
-     * Register Artisan commands (populated as Phase E lands each command).
-     */
     protected function registerCommands(): void
     {
         if (! $this->app->runningInConsole()) {
@@ -57,11 +49,10 @@ class MindumServiceProvider extends ServiceProvider
         }
 
         $this->commands([
-            // Commands added in Phase E:
-            // Commands\InstallCommand::class,
-            // Commands\RescanCommand::class,
-            // Commands\StatusCommand::class,
-            // Commands\ChatCommand::class,
+            InstallCommand::class,
+            RescanCommand::class,
+            StatusCommand::class,
+            ChatCommand::class,
         ]);
     }
 }
