@@ -18,6 +18,8 @@ return [
 
     'api_url' => env('MINDUM_API_URL', 'https://api.mindum.ai'),
 
+    'api_timeout_seconds' => (int) env('MINDUM_API_TIMEOUT_SECONDS', 180),
+
     /*
     |--------------------------------------------------------------------------
     | MCP Server Endpoint
