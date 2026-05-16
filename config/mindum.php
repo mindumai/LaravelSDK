@@ -126,13 +126,16 @@ return [
     'widget' => [
         'token_endpoint' => env('MINDUM_WIDGET_TOKEN_ENDPOINT', '/mindum/widget/token'),
 
-        // The widget JS bundle URL. Defaults to the public CDN build; for
-        // self-hosted deployments, point this at your own asset URL.
-        'bundle_url' => env('MINDUM_WIDGET_BUNDLE_URL', 'https://cdn.mindum.ai/widget/v1/widget.js'),
+        // The widget JS bundle URL. Served from the Mindum orchestrator's
+        // own domain for now; can be migrated to a dedicated CDN
+        // (cdn.mindum.ai or jsDelivr) later without customer changes.
+        'bundle_url' => env('MINDUM_WIDGET_BUNDLE_URL', 'https://mindum.online/widget/v1/widget.js'),
 
-        // WebSocket URL for the Reverb server on the Mindum orchestrator.
-        // The widget connects here for real-time chat updates.
-        'ws_url' => env('MINDUM_WS_URL', 'wss://ws.mindum.ai'),
+        // WebSocket URL display only — the widget actually reads the
+        // Reverb connection details from the mint response since 2C.2,
+        // so this config value only feeds `mindum:status` output and
+        // does not affect runtime connection.
+        'ws_url' => env('MINDUM_WS_URL', 'wss://mindum.online'),
 
         // Visual configuration passed through to the widget bundle. Customers
         // can override any of these via attributes on <x-mindum::widget />.
