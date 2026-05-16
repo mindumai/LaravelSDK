@@ -36,6 +36,12 @@ class WidgetTokenProxyTest extends TestCase
             'api.mindum.ai/api/widget/token' => Http::response([
                 'token' => 'eyJ0eXA-fake-jwt',
                 'expires_at' => 1747500000,
+                'ws' => [
+                    'key' => 'pub-key',
+                    'host' => 'ws.example.test',
+                    'port' => 443,
+                    'scheme' => 'https',
+                ],
             ], 200),
         ]);
 
@@ -43,6 +49,8 @@ class WidgetTokenProxyTest extends TestCase
 
         $this->assertSame('eyJ0eXA-fake-jwt', $result['token']);
         $this->assertSame(1747500000, $result['expires_at']);
+        $this->assertSame('pub-key', $result['ws']['key']);
+        $this->assertSame('ws.example.test', $result['ws']['host']);
 
         Http::assertSent(function ($request) {
             return $request->hasHeader('Authorization', 'Bearer mk_test_abc123')

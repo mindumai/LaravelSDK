@@ -26,7 +26,14 @@ class WidgetTokenProxy
     public const TIMEOUT_SECONDS = 10;
 
     /**
-     * @return array{token: string, expires_at: int}
+     * Mint a widget JWT for the browser. The orchestrator's response also
+     * carries its Reverb client config (`ws`) so the widget bundle can wire
+     * laravel-echo without the customer pre-configuring Reverb keys. We
+     * pass the orchestrator's response through verbatim — the SDK doesn't
+     * need to know what's in it, just that `token` and `expires_at` are
+     * present.
+     *
+     * @return array{token: string, expires_at: int} & array<string, mixed>
      *
      * @throws WidgetTokenMintException
      */
@@ -81,9 +88,11 @@ class WidgetTokenProxy
             );
         }
 
-        return [
-            'token' => (string) $payload['token'],
-            'expires_at' => (int) $payload['expires_at'],
-        ];
+        // Coerce the required fields, pass everything else through (e.g. `ws`
+        // config). New orchestrator fields land for free without an SDK bump.
+        $payload['token'] = (string) $payload['token'];
+        $payload['expires_at'] = (int) $payload['expires_at'];
+
+        return $payload;
     }
 }
