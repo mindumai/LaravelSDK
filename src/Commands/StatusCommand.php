@@ -50,12 +50,26 @@ class StatusCommand extends Command
             ? '<fg=green>'.$registeredCount.'</>'
             : '<fg=yellow>0</>';
 
+        $widgetEndpoint = (string) config('mindum.widget.token_endpoint', '');
+        $widgetEndpointDisplay = $widgetEndpoint === ''
+            ? '<fg=yellow>disabled</>'
+            : $widgetEndpoint;
+
+        $widgetWsUrl = (string) config('mindum.widget.ws_url', '');
+        $widgetWsUrlDisplay = $widgetWsUrl === '' ? '<fg=red>not set</>' : $widgetWsUrl;
+
+        $widgetBundleUrl = (string) config('mindum.widget.bundle_url', '');
+        $widgetBundleUrlDisplay = $widgetBundleUrl === '' ? '<fg=red>not set</>' : $widgetBundleUrl;
+
         $rows = [
             ['API URL', (string) config('mindum.api_url', '(not set)')],
             ['API key', $apiKeyDisplay],
             ['MCP endpoint', (string) config('mindum.mcp_endpoint', '(not set)')],
             ['MCP secret', $mcpSecretDisplay],
             ['MCP tools registered', $registeredDisplay],
+            ['Widget token endpoint', $widgetEndpointDisplay],
+            ['Widget WS URL', $widgetWsUrlDisplay],
+            ['Widget bundle URL', $widgetBundleUrlDisplay],
             ['Tools path', (string) config('mindum.tools_path', '(not set)')],
             ['Tools namespace', (string) config('mindum.tools_namespace', '(not set)')],
             ['Scan paths', implode(', ', (array) config('mindum.scan_paths', []))],

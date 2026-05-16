@@ -108,4 +108,39 @@ return [
 
     'log_level' => env('MINDUM_LOG_LEVEL', 'info'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Widget
+    |--------------------------------------------------------------------------
+    |
+    | Configuration for the Mindum chat widget. The widget never holds the
+    | customer's API key — it calls `token_endpoint` (same-origin, hosted by
+    | this app) to mint a short-lived JWT, then uses that JWT for /api/widget
+    | calls and Reverb private-channel subscribe on the orchestrator.
+    |
+    | Setting `token_endpoint` to an empty string disables the route (and
+    | the Blade component renders nothing).
+    |
+    */
+
+    'widget' => [
+        'token_endpoint' => env('MINDUM_WIDGET_TOKEN_ENDPOINT', '/mindum/widget/token'),
+
+        // The widget JS bundle URL. Defaults to the public CDN build; for
+        // self-hosted deployments, point this at your own asset URL.
+        'bundle_url' => env('MINDUM_WIDGET_BUNDLE_URL', 'https://cdn.mindum.ai/widget/v1/widget.js'),
+
+        // WebSocket URL for the Reverb server on the Mindum orchestrator.
+        // The widget connects here for real-time chat updates.
+        'ws_url' => env('MINDUM_WS_URL', 'wss://ws.mindum.ai'),
+
+        // Visual configuration passed through to the widget bundle. Customers
+        // can override any of these via attributes on <x-mindum::widget />.
+        'theme' => [
+            'primary' => env('MINDUM_WIDGET_PRIMARY', '#0F172A'),
+        ],
+
+        'position' => env('MINDUM_WIDGET_POSITION', 'bottom-right'),
+    ],
+
 ];

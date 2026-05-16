@@ -122,4 +122,40 @@ class StatusCommandTest extends TestCase
             ->expectsOutputToContain('MCP tools registered')
             ->assertExitCode(0);
     }
+
+    public function test_status_shows_widget_token_endpoint_row(): void
+    {
+        config()->set('mindum.widget.token_endpoint', '/mindum/widget/token');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('Widget token endpoint')
+            ->assertExitCode(0);
+    }
+
+    public function test_status_reports_widget_disabled_when_endpoint_empty(): void
+    {
+        config()->set('mindum.widget.token_endpoint', '');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('disabled')
+            ->assertExitCode(0);
+    }
+
+    public function test_status_shows_widget_ws_url_row(): void
+    {
+        config()->set('mindum.widget.ws_url', 'wss://ws.mindum.ai');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('Widget WS URL')
+            ->assertExitCode(0);
+    }
+
+    public function test_status_shows_widget_bundle_url_row(): void
+    {
+        config()->set('mindum.widget.bundle_url', 'https://cdn.mindum.ai/widget/v1/widget.js');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('Widget bundle URL')
+            ->assertExitCode(0);
+    }
 }
