@@ -90,4 +90,36 @@ class StatusCommandTest extends TestCase
             ->expectsOutputToContain('not set')
             ->assertExitCode(0);
     }
+
+    public function test_status_reports_mcp_secret_row_when_unset(): void
+    {
+        // Substring expectations are matched against individual `doWrite`
+        // calls (one per rendered row). Each substring must pin a different
+        // row, so we only assert one substring per artisan call here.
+        config()->set('mindum.mcp_secret', '');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('MCP secret')
+            ->assertExitCode(0);
+    }
+
+    public function test_status_reports_configured_mcp_secret_without_leaking_value(): void
+    {
+        config()->set('mindum.mcp_secret', 'shhh-do-not-leak');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('configured')
+            ->doesntExpectOutputToContain('shhh-do-not-leak')
+            ->assertExitCode(0);
+    }
+
+    public function test_status_reports_registered_tool_count(): void
+    {
+        config()->set('mindum.tools_path', __DIR__.'/../../Stubs/Mcp/Tools');
+        config()->set('mindum.tools_namespace', 'Mindum\\Laravel\\Tests\\Stubs\\Mcp\\Tools');
+
+        $this->artisan('mindum:status')
+            ->expectsOutputToContain('MCP tools registered')
+            ->assertExitCode(0);
+    }
 }

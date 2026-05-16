@@ -6,6 +6,7 @@ namespace Mindum\Laravel\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
+use Mindum\Laravel\Mcp\ToolDiscovery;
 use Mindum\Laravel\Tools\ToolClassRenderer;
 
 /**
@@ -41,10 +42,20 @@ class StatusCommand extends Command
         $apiKey = (string) config('mindum.api_key', '');
         $apiKeyDisplay = $apiKey === '' ? '<fg=red>not set</>' : '<fg=green>set</> '.$this->redactKey($apiKey);
 
+        $mcpSecret = (string) config('mindum.mcp_secret', '');
+        $mcpSecretDisplay = $mcpSecret === '' ? '<fg=red>not set</>' : '<fg=green>configured</>';
+
+        $registeredCount = count(ToolDiscovery::discover());
+        $registeredDisplay = $registeredCount > 0
+            ? '<fg=green>'.$registeredCount.'</>'
+            : '<fg=yellow>0</>';
+
         $rows = [
             ['API URL', (string) config('mindum.api_url', '(not set)')],
             ['API key', $apiKeyDisplay],
             ['MCP endpoint', (string) config('mindum.mcp_endpoint', '(not set)')],
+            ['MCP secret', $mcpSecretDisplay],
+            ['MCP tools registered', $registeredDisplay],
             ['Tools path', (string) config('mindum.tools_path', '(not set)')],
             ['Tools namespace', (string) config('mindum.tools_namespace', '(not set)')],
             ['Scan paths', implode(', ', (array) config('mindum.scan_paths', []))],
