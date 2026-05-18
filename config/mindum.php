@@ -144,6 +144,19 @@ return [
         ],
 
         'position' => env('MINDUM_WIDGET_POSITION', 'bottom-right'),
+
+        // First-open welcome (FR-054). Synthetic — not persisted, not sent
+        // to Anthropic. `message` becomes the first assistant bubble when
+        // the panel opens with no history (empty string = disabled).
+        // `prompts` are clickable starter chips. Defaults are domain-neutral;
+        // customers will typically override via Blade attributes:
+        //   <x-mindum::widget
+        //       welcome-message="Hi! What would you like to do?"
+        //       :welcome-prompts="['Show my tasks', 'Create a project']" />
+        'welcome' => [
+            'message' => env('MINDUM_WIDGET_WELCOME_MESSAGE', 'Hi! How can I help you today?'),
+            'prompts' => [],
+        ],
     ],
 
 ];

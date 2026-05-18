@@ -31,6 +31,8 @@ use Illuminate\View\View;
  *       session-id="from-customer-auth-flow"
  *       :theme="['primary' => '#10b981']"
  *       position="bottom-left"
+ *       welcome-message="Hi! What would you like to do?"
+ *       :welcome-prompts="['Show my tasks', 'Create a project']"
  *   />
  */
 class Widget extends Component
@@ -42,12 +44,15 @@ class Widget extends Component
 
     /**
      * @param  array<string, mixed>|Arrayable<string, mixed>|null  $theme
+     * @param  array<int, string>|Arrayable<int, string>|null  $welcomePrompts
      */
     public function __construct(
         ?string $sessionId = null,
         ?string $endUserId = null,
         array|Arrayable|null $theme = null,
         ?string $position = null,
+        ?string $welcomeMessage = null,
+        array|Arrayable|null $welcomePrompts = null,
     ) {
         $tokenEndpoint = (string) config('mindum.widget.token_endpoint', '');
         $apiKey = (string) config('mindum.api_key', '');
@@ -57,6 +62,17 @@ class Widget extends Component
         $themeArray = $theme instanceof Arrayable ? $theme->toArray() : ($theme ?? []);
         $baseTheme = (array) config('mindum.widget.theme', []);
 
+        $promptsArray = $welcomePrompts instanceof Arrayable ? $welcomePrompts->toArray() : $welcomePrompts;
+        $welcome = (array) config('mindum.widget.welcome', []);
+        $welcomeMessageResolved = $welcomeMessage ?? (string) ($welcome['message'] ?? '');
+        $welcomePromptsResolved = $promptsArray ?? (array) ($welcome['prompts'] ?? []);
+        // Coerce to flat list of non-empty strings — defensive against
+        // accidental ['key' => 'value'] config or null entries.
+        $welcomePromptsResolved = array_values(array_filter(
+            array_map(static fn ($p) => is_string($p) ? trim($p) : '', $welcomePromptsResolved),
+            static fn (string $p) => $p !== '',
+        ));
+
         $this->config = [
             'sessionId' => $sessionId ?? '',
             'endUserId' => $endUserId,
@@ -65,6 +81,10 @@ class Widget extends Component
             'wsUrl' => (string) config('mindum.widget.ws_url', ''),
             'theme' => array_merge($baseTheme, $themeArray),
             'position' => $position ?? (string) config('mindum.widget.position', 'bottom-right'),
+            'welcome' => [
+                'message' => $welcomeMessageResolved,
+                'prompts' => $welcomePromptsResolved,
+            ],
             'bundleUrl' => (string) config('mindum.widget.bundle_url', ''),
         ];
     }
