@@ -4,13 +4,13 @@
 
 Install Mindum into any Laravel app to give your end users a conversational interface to your app's business logic. Mindum scans your models, services, controllers, jobs, and repositories, and uses AI to automatically generate [MCP](https://modelcontextprotocol.io) tool definitions — no manual tool writing required.
 
-> Status: **pre-release / milestone 1 in progress**. See [`CHANGELOG.md`](CHANGELOG.md) for what's shipped.
+> Status: **early access**. Active development — see [`CHANGELOG.md`](CHANGELOG.md) for what's shipped.
 
 ## Requirements
 
 - PHP **8.2+**
-- Laravel **11+**
-- A Mindum account ([mindum.ai](https://mindum.ai)) for the API key
+- Laravel **12+**
+- A Mindum account ([mindum.online](https://mindum.online)) for the API key
 - An Anthropic API key (only required during local `mindum:chat` testing; the hosted orchestrator handles it in production)
 
 ## Install
