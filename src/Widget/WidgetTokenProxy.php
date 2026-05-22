@@ -47,7 +47,7 @@ class WidgetTokenProxy
             );
         }
 
-        $baseUrl = rtrim((string) config('mindum.api_url', 'https://api.mindum.ai'), '/');
+        $baseUrl = rtrim((string) config('mindum.api_url', 'https://mindum.online'), '/');
         $payload = ['session_id' => $sessionId];
         if ($endUserId !== null && $endUserId !== '') {
             $payload['end_user_id'] = $endUserId;

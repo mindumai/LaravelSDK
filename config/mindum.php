@@ -10,13 +10,13 @@ return [
     |--------------------------------------------------------------------------
     |
     | These credentials identify your account with the Mindum orchestration
-    | API. Create an account at https://mindum.ai to obtain an API key.
+    | API. Create an account at https://mindum.online to obtain an API key.
     |
     */
 
     'api_key' => env('MINDUM_API_KEY'),
 
-    'api_url' => env('MINDUM_API_URL', 'https://api.mindum.ai'),
+    'api_url' => env('MINDUM_API_URL', 'https://mindum.online'),
 
     'api_timeout_seconds' => (int) env('MINDUM_API_TIMEOUT_SECONDS', 180),
 
@@ -128,7 +128,7 @@ return [
 
         // The widget JS bundle URL. Served from the Mindum orchestrator's
         // own domain for now; can be migrated to a dedicated CDN
-        // (cdn.mindum.ai or jsDelivr) later without customer changes.
+        // (cdn.mindum.online or jsDelivr) later without customer changes.
         'bundle_url' => env('MINDUM_WIDGET_BUNDLE_URL', 'https://mindum.online/widget/v1/widget.js'),
 
         // WebSocket URL display only — the widget actually reads the

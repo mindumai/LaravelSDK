@@ -66,7 +66,7 @@ class InstallCommand extends Command
         $apiKey = (string) config('mindum.api_key', '');
         if ($apiKey === '') {
             $this->error('MINDUM_API_KEY is not set. Add it to your .env and re-run.');
-            $this->line('  Get a key at <fg=cyan>https://mindum.ai</> (or use your existing one).');
+            $this->line('  Get a key at <fg=cyan>https://mindum.online</> (or use your existing one).');
 
             return false;
         }

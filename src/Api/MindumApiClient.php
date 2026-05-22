@@ -46,7 +46,7 @@ class MindumApiClient
             );
         }
 
-        $baseUrl = rtrim((string) config('mindum.api_url', 'https://api.mindum.ai'), '/');
+        $baseUrl = rtrim((string) config('mindum.api_url', 'https://mindum.online'), '/');
         $timeout = (int) config('mindum.api_timeout_seconds', 180);
 
         try {
