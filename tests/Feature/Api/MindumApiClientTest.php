@@ -11,9 +11,9 @@ use Orchestra\Testbench\TestCase;
 use RuntimeException;
 
 /**
- * Exercises MindumApiClient with a faked HTTP transport. Confirms the
- * client shapes requests correctly and parses both happy-path and
- * error responses.
+ * Exercises MindumApiClient's four async methods (startAnalyzeJob, pollJob,
+ * fetchResults, currentJob) with a faked HTTP transport. Confirms request
+ * shape, response parsing, and error handling.
  */
 class MindumApiClientTest extends TestCase
 {
@@ -26,76 +26,238 @@ class MindumApiClientTest extends TestCase
     {
         $app['config']->set('mindum.api_url', 'https://api.mindum.ai');
         $app['config']->set('mindum.api_key', 'mk_test_abc123');
+        $app['config']->set('mindum.api_timeout_seconds', 30);
     }
 
-    public function test_posts_manifest_with_bearer_token(): void
+    // ────────────────────────────────────────────────────────────────────
+    // startAnalyzeJob
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_start_analyze_job_posts_manifest_with_bearer(): void
     {
         Http::fake([
-            'api.mindum.ai/*' => Http::response([
-                'status' => 'ok',
-                'manifest_id' => 42,
-                'manifest_hash' => 'deadbeef',
-                'tool_count' => 1,
-                'cached' => false,
-                'tools' => [['name' => 'create_post']],
-                'stats' => ['batches' => 1],
-            ], 200),
+            'api.mindum.ai/api/analyze' => Http::response([
+                'job_id' => '01HXY',
+                'status' => 'queued',
+                'total_batches' => 3,
+                'estimated_seconds' => 249,
+                'poll_url' => '/api/analyze/jobs/01HXY',
+                'results_url' => '/api/analyze/jobs/01HXY/results',
+            ], 202),
         ]);
 
-        $client = new MindumApiClient;
-        $result = $client->analyze(['entries' => [['kind' => 'action', 'id' => 'create_post']]]);
+        $result = (new MindumApiClient)->startAnalyzeJob([
+            'entries' => [['kind' => 'action', 'id' => 'create_post']],
+        ]);
 
-        $this->assertSame('ok', $result['status']);
-        $this->assertSame(42, $result['manifest_id']);
-        $this->assertCount(1, $result['tools']);
+        $this->assertSame('01HXY', $result['job_id']);
+        $this->assertSame('queued', $result['status']);
+        $this->assertSame(3, $result['total_batches']);
+        $this->assertSame(249, $result['estimated_seconds']);
 
         Http::assertSent(function ($request) {
-            return $request->hasHeader('Authorization', 'Bearer mk_test_abc123')
+            return $request->method() === 'POST'
                 && str_contains($request->url(), 'api.mindum.ai/api/analyze')
+                && $request->hasHeader('Authorization', 'Bearer mk_test_abc123')
                 && is_array($request['manifest'])
                 && isset($request['manifest']['entries']);
         });
     }
 
-    public function test_throws_when_api_key_missing(): void
+    public function test_start_analyze_job_throws_when_api_key_missing(): void
     {
         config()->set('mindum.api_key', '');
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('Mindum API key not configured');
 
-        (new MindumApiClient)->analyze(['entries' => []]);
+        (new MindumApiClient)->startAnalyzeJob(['entries' => []]);
     }
 
-    public function test_throws_with_meaningful_message_on_http_error(): void
+    public function test_start_analyze_job_throws_on_http_error(): void
     {
         Http::fake([
-            'api.mindum.ai/*' => Http::response([
-                'error' => 'invalid_api_key',
-                'message' => 'The provided API key was not recognized.',
-            ], 401),
+            'api.mindum.ai/*' => Http::response(['error' => 'invalid_api_key'], 401),
         ]);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('HTTP 401');
 
-        (new MindumApiClient)->analyze(['entries' => [['kind' => 'action']]]);
+        (new MindumApiClient)->startAnalyzeJob(['entries' => [['kind' => 'action']]]);
     }
 
-    public function test_throws_when_response_missing_tools_array(): void
+    public function test_start_analyze_job_throws_when_response_missing_job_id(): void
     {
         Http::fake([
-            'api.mindum.ai/*' => Http::response([
-                'status' => 'ok',
-                'error' => 'manifest invalid',
-            ], 200),
+            'api.mindum.ai/*' => Http::response(['status' => 'queued'], 202),
         ]);
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('rejected the manifest');
+        $this->expectExceptionMessage('missing required field: job_id');
 
-        (new MindumApiClient)->analyze(['entries' => []]);
+        (new MindumApiClient)->startAnalyzeJob(['entries' => []]);
     }
+
+    // ────────────────────────────────────────────────────────────────────
+    // pollJob
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_poll_job_returns_full_status_shape(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/jobs/01HXY' => Http::response([
+                'job_id' => '01HXY',
+                'status' => 'running',
+                'batches_completed' => 12,
+                'total_batches' => 55,
+                'tools_generated' => 282,
+                'started_at' => '2026-05-22T15:30:00Z',
+                'completed_at' => null,
+                'estimated_seconds_remaining' => 3569,
+                'tools_downloaded' => false,
+                'error_message' => null,
+                'results_url' => '/api/analyze/jobs/01HXY/results',
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->pollJob('01HXY');
+
+        $this->assertSame('running', $result['status']);
+        $this->assertSame(12, $result['batches_completed']);
+        $this->assertSame(55, $result['total_batches']);
+        $this->assertSame(282, $result['tools_generated']);
+        $this->assertSame('2026-05-22T15:30:00Z', $result['started_at']);
+        $this->assertNull($result['completed_at']);
+        $this->assertFalse($result['tools_downloaded']);
+
+        Http::assertSent(fn ($req) => $req->method() === 'GET'
+            && str_contains($req->url(), '/jobs/01HXY')
+            && $req->hasHeader('Authorization', 'Bearer mk_test_abc123'));
+    }
+
+    public function test_poll_job_throws_on_404(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response(['error' => 'job_not_found'], 404),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 404');
+
+        (new MindumApiClient)->pollJob('01XYZ');
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // fetchResults
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_fetch_results_returns_tools_and_cost_summary(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/jobs/01HXY/results' => Http::response([
+                'job_id' => '01HXY',
+                'tools_count' => 2,
+                'tools' => [
+                    ['name' => 'list_posts'],
+                    ['name' => 'create_post'],
+                ],
+                'cost_summary' => [
+                    'input_tokens' => 26000,
+                    'output_tokens' => 7800,
+                    'approximate_usd' => 0.2,
+                ],
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->fetchResults('01HXY');
+
+        $this->assertSame(2, $result['tools_count']);
+        $this->assertCount(2, $result['tools']);
+        $this->assertSame('list_posts', $result['tools'][0]['name']);
+        $this->assertSame(26000, $result['cost_summary']['input_tokens']);
+        $this->assertSame(0.2, $result['cost_summary']['approximate_usd']);
+    }
+
+    public function test_fetch_results_throws_on_409_job_not_completed(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response(['error' => 'job_not_completed'], 409),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 409');
+
+        (new MindumApiClient)->fetchResults('01HXY');
+    }
+
+    public function test_fetch_results_throws_when_tools_missing(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response(['job_id' => '01HXY'], 200),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('missing "tools" array');
+
+        (new MindumApiClient)->fetchResults('01HXY');
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // currentJob
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_current_job_returns_null_on_204(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/jobs/current' => Http::response(null, 204),
+        ]);
+
+        $result = (new MindumApiClient)->currentJob();
+
+        $this->assertNull($result);
+    }
+
+    public function test_current_job_returns_job_data_on_200(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/jobs/current' => Http::response([
+                'job_id' => '01HXY',
+                'status' => 'running',
+                'batches_completed' => 5,
+                'total_batches' => 10,
+                'tools_generated' => 100,
+                'started_at' => '2026-05-22T15:00:00Z',
+                'completed_at' => null,
+                'estimated_seconds_remaining' => 415,
+                'tools_downloaded' => false,
+                'error_message' => null,
+                'results_url' => '/api/analyze/jobs/01HXY/results',
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->currentJob();
+
+        $this->assertNotNull($result);
+        $this->assertSame('01HXY', $result['job_id']);
+        $this->assertSame('running', $result['status']);
+        $this->assertSame(5, $result['batches_completed']);
+    }
+
+    public function test_current_job_throws_on_unexpected_500(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response(['error' => 'server'], 500),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 500');
+
+        (new MindumApiClient)->currentJob();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Custom api_url
+    // ────────────────────────────────────────────────────────────────────
 
     public function test_honors_custom_api_url(): void
     {
@@ -103,32 +265,14 @@ class MindumApiClientTest extends TestCase
 
         Http::fake([
             'localhost:8000/*' => Http::response([
-                'status' => 'ok',
-                'tools' => [],
-            ], 200),
+                'job_id' => '01HXY',
+                'status' => 'queued',
+                'total_batches' => 0,
+            ], 202),
         ]);
 
-        (new MindumApiClient)->analyze(['entries' => []]);
+        (new MindumApiClient)->startAnalyzeJob(['entries' => []]);
 
         Http::assertSent(fn ($req) => str_contains($req->url(), 'localhost:8000/api/analyze'));
-    }
-
-    public function test_cached_response_flag_is_propagated(): void
-    {
-        Http::fake([
-            'api.mindum.ai/*' => Http::response([
-                'status' => 'ok',
-                'manifest_id' => 1,
-                'manifest_hash' => 'abc',
-                'tool_count' => 0,
-                'cached' => true,
-                'tools' => [],
-                'stats' => [],
-            ], 200),
-        ]);
-
-        $result = (new MindumApiClient)->analyze(['entries' => []]);
-
-        $this->assertTrue($result['cached']);
     }
 }

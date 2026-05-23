@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Async analyze pipeline.** `mindum:install` and `mindum:rescan` now use
+  the async `POST /api/analyze` endpoint, which returns a job_id immediately
+  instead of processing inline. The SDK polls for batch progress and
+  downloads results when the job completes. Customer-visible UX:
+  - Live progress: "Analyzing... 12/55 batches (22%)" with estimated time
+    remaining, updated as each batch finishes
+  - Idempotent: Ctrl+C, machine reboot, or network blip — re-running
+    `mindum:install` attaches to any existing in-flight job (or downloads
+    results from one that's already completed) instead of starting fresh
+  - Survives the previous nginx 180s timeout that prevented installs on
+    apps with more than ~50 candidate methods
+- **`MindumApiClient` interface:** new methods `startAnalyzeJob`, `pollJob`,
+  `fetchResults`, `currentJob`. Old synchronous `analyze()` removed.
+
+### Removed
+
+- Old synchronous `/api/analyze` code path (the API itself migrated to
+  202 + job_id; SDK matches).
+
 ## [0.1.0] — 2026-05-22
 
 First public release.

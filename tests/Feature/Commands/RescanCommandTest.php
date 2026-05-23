@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Mindum\Laravel\Tests\Feature\Commands;
 
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Mindum\Laravel\MindumServiceProvider;
 use Orchestra\Testbench\TestCase;
 
@@ -38,6 +40,7 @@ class RescanCommandTest extends TestCase
     {
         parent::setUp();
         $this->files = new Filesystem;
+        Sleep::fake();
     }
 
     protected function tearDown(): void
@@ -59,23 +62,25 @@ class RescanCommandTest extends TestCase
 
     public function test_rescan_writes_files_and_reports_summary(): void
     {
-        Http::fake([
-            'api.mindum.ai/*' => Http::response([
-                'status' => 'ok',
-                'manifest_id' => 1,
-                'manifest_hash' => str_repeat('b', 64),
-                'tool_count' => 1,
-                'cached' => false,
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01R1', 'status' => 'queued', 'total_batches' => 1, 'estimated_seconds' => 83],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1, 'job_id' => '01R1'],
+            ],
+            'results' => [
+                'job_id' => '01R1',
+                'tools_count' => 1,
                 'tools' => [[
                     'name' => 'find_post',
-                    'description' => 'Find a single post.',
-                    'input_schema' => ['type' => 'object', 'properties' => ['id' => ['type' => 'integer']], 'required' => ['id']],
+                    'description' => 'Find a post',
+                    'input_schema' => ['type' => 'object', 'properties' => [], 'required' => []],
                     'handle_code' => 'return null;',
                     'operation_type' => 'read',
                 ]],
-                'stats' => ['batches' => 1, 'input_tokens' => 100, 'output_tokens' => 50, 'cost_cents' => 0],
-            ], 200),
-        ]);
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
 
         $this->artisan('mindum:rescan')
             ->expectsOutputToContain('mindum: 1 tool')
@@ -86,21 +91,121 @@ class RescanCommandTest extends TestCase
 
     public function test_rescan_quiet_mode_skips_step_output(): void
     {
-        Http::fake([
-            'api.mindum.ai/*' => Http::response([
-                'status' => 'ok',
-                'manifest_id' => 1,
-                'manifest_hash' => 'xx',
-                'tool_count' => 0,
-                'cached' => true,
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01R2', 'status' => 'queued', 'total_batches' => 0],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 0, 'total_batches' => 0, 'tools_generated' => 0, 'job_id' => '01R2'],
+            ],
+            'results' => [
+                'job_id' => '01R2',
+                'tools_count' => 0,
                 'tools' => [],
-                'stats' => [],
-            ], 200),
-        ]);
+                'cost_summary' => ['input_tokens' => 0, 'output_tokens' => 0, 'approximate_usd' => 0.0],
+            ],
+        ]));
 
         $this->artisan('mindum:rescan', ['--quiet-output' => true])
             ->doesntExpectOutputToContain('scanner:')
             ->expectsOutputToContain('mindum: 0 tools')
             ->assertExitCode(0);
+    }
+
+    public function test_rescan_attaches_to_completed_undownloaded_job(): void
+    {
+        Http::fake($this->routedResponder([
+            'current_then' => [
+                'status' => 'completed',
+                'job_id' => '01ATTACH',
+                'batches_completed' => 1,
+                'total_batches' => 1,
+                'tools_generated' => 1,
+            ],
+            'results' => [
+                'job_id' => '01ATTACH',
+                'tools_count' => 1,
+                'tools' => [[
+                    'name' => 'recovered_tool',
+                    'description' => 'Tool from a prior job',
+                    'input_schema' => ['type' => 'object', 'properties' => [], 'required' => []],
+                    'handle_code' => 'return null;',
+                    'operation_type' => 'read',
+                ]],
+                'cost_summary' => ['input_tokens' => 500, 'output_tokens' => 200, 'approximate_usd' => 0.005],
+            ],
+        ]));
+
+        $this->artisan('mindum:rescan')
+            ->expectsOutputToContain('attach:')
+            ->expectsOutputToContain('mindum: 1 tool (attached)')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST');
+    }
+
+    /**
+     * @param  array<string, mixed>  $scenario
+     */
+    private function routedResponder(array $scenario): callable
+    {
+        $pollIndex = 0;
+
+        return function (HttpRequest $request) use (&$pollIndex, $scenario) {
+            $url = $request->url();
+            $method = $request->method();
+
+            if ($method === 'GET' && str_ends_with($url, '/api/analyze/jobs/current')) {
+                $current = $scenario['current_then'] ?? 204;
+                if ($current === 204) {
+                    return Http::response(null, 204);
+                }
+
+                return Http::response($this->mergePollDefaults($current), 200);
+            }
+
+            if ($method === 'GET' && str_contains($url, '/results')) {
+                return Http::response($scenario['results'] ?? [], 200);
+            }
+
+            if ($method === 'GET' && str_contains($url, '/api/analyze/jobs/')) {
+                $sequence = $scenario['poll_sequence'] ?? [];
+                $next = $sequence[$pollIndex] ?? end($sequence);
+                $pollIndex++;
+
+                return Http::response($this->mergePollDefaults($next), 200);
+            }
+
+            if ($method === 'POST' && str_ends_with($url, '/api/analyze')) {
+                return Http::response(array_merge([
+                    'job_id' => '01ANY',
+                    'status' => 'queued',
+                    'total_batches' => 1,
+                    'estimated_seconds' => 83,
+                ], $scenario['post_returns'] ?? []), 202);
+            }
+
+            return Http::response(['error' => 'unhandled_route', 'url' => $url], 500);
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $partial
+     * @return array<string, mixed>
+     */
+    private function mergePollDefaults(array $partial): array
+    {
+        return array_merge([
+            'job_id' => '01ANY',
+            'status' => 'running',
+            'batches_completed' => 0,
+            'total_batches' => 1,
+            'tools_generated' => 0,
+            'started_at' => '2026-05-22T15:00:00Z',
+            'completed_at' => null,
+            'estimated_seconds_remaining' => 83,
+            'tools_downloaded' => false,
+            'error_message' => null,
+            'results_url' => '/api/analyze/jobs/'.($partial['job_id'] ?? '01ANY').'/results',
+        ], $partial);
     }
 }

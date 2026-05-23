@@ -7,36 +7,38 @@ namespace Mindum\Laravel\Support;
 use Mindum\Laravel\Tools\WriteReport;
 
 /**
- * Immutable result of one AnalyzeRunner::run() invocation. Bundles together
- * scanner stats, API response, and on-disk write report so command classes
- * can render a single coherent summary to the operator.
+ * Immutable result of one AnalyzeRunner::run() invocation. Bundles scanner
+ * stats (may be zero/empty when attaching to an existing job — no fresh
+ * scan ran), job identification, final tool count, cost summary, and the
+ * on-disk write report.
  */
 final class AnalyzeResult
 {
     /**
      * @param  array<int, string>  $scannerErrors
-     * @param  array<string, mixed>  $apiResult
+     * @param  array{
+     *     input_tokens: int,
+     *     output_tokens: int,
+     *     approximate_usd: float
+     * }  $costSummary
      */
     public function __construct(
         public readonly int $entryCount,
         public readonly int $scannerSkipped,
         public readonly array $scannerErrors,
-        public readonly array $apiResult,
+        public readonly string $jobId,
+        public readonly int $toolCount,
+        public readonly array $costSummary,
+        public readonly bool $attached,
         public readonly WriteReport $writeReport,
     ) {}
 
-    public function isCached(): bool
+    /**
+     * True if this run attached to a pre-existing job (in-flight or
+     * already completed) rather than starting a fresh scan + upload.
+     */
+    public function wasAttached(): bool
     {
-        return (bool) ($this->apiResult['cached'] ?? false);
-    }
-
-    public function toolCount(): int
-    {
-        return (int) ($this->apiResult['tool_count'] ?? $this->writeReport->writtenCount());
-    }
-
-    public function manifestHash(): string
-    {
-        return (string) ($this->apiResult['manifest_hash'] ?? '');
+        return $this->attached;
     }
 }

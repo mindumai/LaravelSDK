@@ -56,10 +56,30 @@ class RescanCommand extends Command
         return function (string $event, array $data): void {
             match ($event) {
                 'scan_complete' => $this->line(sprintf('  scanner:  %d entries', $data['entry_count'])),
-                'api_complete' => $this->line(sprintf(
-                    '  api:      %d tools%s',
-                    $data['tool_count'],
-                    $data['cached'] ? ' (cached)' : '',
+                'api_accepted' => $this->line(sprintf(
+                    '  api:      job %s queued (%d batches)',
+                    substr($data['job_id'], 0, 12).'…',
+                    $data['total_batches'],
+                )),
+                'attach_completed' => $this->line(sprintf(
+                    '  attach:   downloading from job %s (already complete)',
+                    substr($data['job_id'], 0, 12).'…',
+                )),
+                'attach_in_flight' => $this->line(sprintf(
+                    '  attach:   joining job %s at %d/%d batches',
+                    substr($data['job_id'], 0, 12).'…',
+                    $data['batches_completed'],
+                    $data['total_batches'],
+                )),
+                'poll_progress' => $this->line(sprintf(
+                    '  poll:     %d/%d batches done',
+                    $data['batches_completed'],
+                    $data['total_batches'],
+                )),
+                'download_complete' => $this->line(sprintf(
+                    '  download: %d tools (~$%.2f)',
+                    $data['tools_count'],
+                    $data['cost_summary']['approximate_usd'],
                 )),
                 'write_complete' => $this->line(sprintf(
                     '  writer:   %d written, %d orphans deleted',
@@ -75,9 +95,9 @@ class RescanCommand extends Command
     {
         $this->info(sprintf(
             'mindum: %d tool%s%s at %s',
-            $result->toolCount(),
-            $result->toolCount() === 1 ? '' : 's',
-            $result->isCached() ? ' (cached)' : '',
+            $result->toolCount,
+            $result->toolCount === 1 ? '' : 's',
+            $result->wasAttached() ? ' (attached)' : '',
             $result->writeReport->toolsPath,
         ));
     }
