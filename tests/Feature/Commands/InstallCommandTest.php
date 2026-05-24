@@ -61,13 +61,182 @@ class InstallCommandTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_install_fails_when_api_key_missing(): void
+    public function test_install_fails_when_api_key_missing_in_non_interactive_mode(): void
+    {
+        // Per Phase E2: --no-interaction means "scripted run, don't hang
+        // on stdin." Original error-and-exit behavior preserved so CI
+        // pipelines still get a clear signal instead of a hung process.
+        config()->set('mindum.api_key', '');
+
+        $this->artisan('mindum:install', ['--force' => true, '--no-interaction' => true])
+            ->expectsOutputToContain('MINDUM_API_KEY is not set')
+            ->assertExitCode(1);
+    }
+
+    public function test_install_prompts_for_api_key_when_missing_runtime_only(): void
+    {
+        // User declines to save to .env → key lives in runtime config only.
+        // The rest of the install flow proceeds with that key.
+        config()->set('mindum.api_key', '');
+
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01PR', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['prompted_tool']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('MINDUM_API_KEY is not set')
+            ->expectsQuestion('Paste your Mindum API key (starts with mk_)', 'mk_test_runtime_only_key')
+            ->expectsConfirmation('Save this key to your .env file?', 'no')
+            ->expectsOutputToContain('for this run only')
+            ->doesntExpectOutputToContain('Saved')
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+
+        // Runtime config picked it up.
+        $this->assertSame('mk_test_runtime_only_key', config('mindum.api_key'));
+
+        // The Bearer header on the subsequent HTTP calls used the new key.
+        Http::assertSent(fn (HttpRequest $r) => $r->hasHeader('Authorization', 'Bearer mk_test_runtime_only_key'));
+    }
+
+    public function test_install_rejects_empty_api_key_at_prompt(): void
     {
         config()->set('mindum.api_key', '');
 
         $this->artisan('mindum:install', ['--force' => true])
             ->expectsOutputToContain('MINDUM_API_KEY is not set')
+            ->expectsQuestion('Paste your Mindum API key (starts with mk_)', '')
+            ->expectsOutputToContain('No key provided')
             ->assertExitCode(1);
+    }
+
+    public function test_install_rejects_invalid_api_key_format_at_prompt(): void
+    {
+        // Catch paste mistakes early — customers commonly paste an
+        // unrelated token or only half the key.
+        config()->set('mindum.api_key', '');
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('MINDUM_API_KEY is not set')
+            ->expectsQuestion('Paste your Mindum API key (starts with mk_)', 'sk-ant-not-a-mindum-key')
+            ->expectsOutputToContain('Invalid key format')
+            ->assertExitCode(1);
+    }
+
+    public function test_install_writes_api_key_to_env_when_user_agrees(): void
+    {
+        // Verifies the file write happens. Uses a per-test temp app root so
+        // we can inspect .env after the run without polluting the shared
+        // fixture directory. We copy the fixture's app/ tree in so the
+        // scanner has real candidates to find — otherwise it'd throw
+        // "Scanner produced 0 candidate entries" before reaching the
+        // analyze step.
+        $tempAppRoot = sys_get_temp_dir().DIRECTORY_SEPARATOR.'mindum_envtest_'.bin2hex(random_bytes(6));
+        $this->files->makeDirectory($tempAppRoot, 0755, true);
+        $this->files->copyDirectory(
+            realpath(__DIR__.'/../../fixtures/laravel-app/app'),
+            $tempAppRoot.'/app',
+        );
+        // Seed a minimal .env.example so writeApiKeyToEnv copies-then-appends
+        // (the realistic onboarding shape: customer's app has .env.example
+        // but no .env yet).
+        file_put_contents($tempAppRoot.'/.env.example', "APP_NAME=Demo\nAPP_ENV=local\n");
+
+        $this->app->setBasePath($tempAppRoot);
+        config()->set('mindum.api_key', '');
+        config()->set('mindum.tools_path', $this->toolsPath);
+        config()->set('mindum.scan_paths', ['app/']);
+
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01ENV', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['env_tool']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        try {
+            $this->artisan('mindum:install', ['--force' => true])
+                ->expectsQuestion('Paste your Mindum API key (starts with mk_)', 'mk_live_savemekey123')
+                ->expectsConfirmation('Save this key to your .env file?', 'yes')
+                ->expectsOutputToContain('Saved')
+                ->assertExitCode(0);
+
+            $this->assertFileExists($tempAppRoot.'/.env');
+            $envContents = file_get_contents($tempAppRoot.'/.env');
+            $this->assertStringContainsString('MINDUM_API_KEY=mk_live_savemekey123', $envContents);
+            // Preserved the prior .env.example contents during the copy.
+            $this->assertStringContainsString('APP_NAME=Demo', $envContents);
+        } finally {
+            $this->files->deleteDirectory($tempAppRoot);
+        }
+    }
+
+    public function test_install_replaces_existing_mindum_api_key_line(): void
+    {
+        // Customer rotated their key — re-running install should overwrite
+        // the existing MINDUM_API_KEY= line rather than duplicating it.
+        $tempAppRoot = sys_get_temp_dir().DIRECTORY_SEPARATOR.'mindum_envtest_'.bin2hex(random_bytes(6));
+        $this->files->makeDirectory($tempAppRoot, 0755, true);
+        $this->files->copyDirectory(
+            realpath(__DIR__.'/../../fixtures/laravel-app/app'),
+            $tempAppRoot.'/app',
+        );
+        file_put_contents(
+            $tempAppRoot.'/.env',
+            "APP_NAME=Demo\nMINDUM_API_KEY=mk_live_old_stale_key\nDB_CONNECTION=sqlite\n",
+        );
+
+        $this->app->setBasePath($tempAppRoot);
+        config()->set('mindum.api_key', '');
+        config()->set('mindum.tools_path', $this->toolsPath);
+        config()->set('mindum.scan_paths', ['app/']);
+
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01R', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['rotated']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        try {
+            $this->artisan('mindum:install', ['--force' => true])
+                ->expectsQuestion('Paste your Mindum API key (starts with mk_)', 'mk_live_brand_new_key')
+                ->expectsConfirmation('Save this key to your .env file?', 'yes')
+                ->assertExitCode(0);
+
+            $envContents = file_get_contents($tempAppRoot.'/.env');
+
+            $this->assertStringNotContainsString('mk_live_old_stale_key', $envContents);
+            $this->assertStringContainsString('MINDUM_API_KEY=mk_live_brand_new_key', $envContents);
+            // Only ONE line — substr_count is exact.
+            $this->assertSame(1, substr_count($envContents, 'MINDUM_API_KEY='));
+            // Surrounding lines preserved.
+            $this->assertStringContainsString('APP_NAME=Demo', $envContents);
+            $this->assertStringContainsString('DB_CONNECTION=sqlite', $envContents);
+        } finally {
+            $this->files->deleteDirectory($tempAppRoot);
+        }
     }
 
     public function test_install_fresh_scan_happy_path(): void

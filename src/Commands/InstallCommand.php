@@ -77,10 +77,20 @@ class InstallCommand extends Command
     {
         $apiKey = (string) config('mindum.api_key', '');
         if ($apiKey === '') {
-            $this->error('MINDUM_API_KEY is not set. Add it to your .env and re-run.');
-            $this->line('  Get a key at <fg=cyan>https://mindum.online</> (or use your existing one).');
+            // Phase E2: interactive prompt closes Firefly Cycle 1 finding #6
+            // (dashboard says "paste API key when prompted" but the CLI
+            // didn't actually prompt). In non-interactive mode we keep the
+            // original error-and-exit so scripted runs don't hang on stdin.
+            if (! $this->input->isInteractive() || $this->option('no-interaction')) {
+                $this->error('MINDUM_API_KEY is not set. Add it to your .env and re-run.');
+                $this->line('  Get a key at <fg=cyan>https://mindum.online</> (or use your existing one).');
 
-            return false;
+                return false;
+            }
+
+            if (! $this->promptForApiKey()) {
+                return false;
+            }
         }
 
         $toolsPath = (string) config('mindum.tools_path', '');
@@ -97,6 +107,109 @@ class InstallCommand extends Command
         $this->newLine();
 
         return true;
+    }
+
+    /**
+     * Ask the customer for their Mindum API key (Phase E2). Input is masked
+     * via $this->secret() so the key doesn't end up in shell history or
+     * screen recordings. Validates the mk_ prefix to catch paste mistakes
+     * early. Returns true on success (config('mindum.api_key') is now set),
+     * false on cancellation or validation failure.
+     *
+     * On success, optionally writes MINDUM_API_KEY to the customer's .env
+     * (default yes, so re-runs don't re-prompt). If they decline, the key
+     * lives in runtime config only and they'll re-enter on next install.
+     */
+    private function promptForApiKey(): bool
+    {
+        $this->line('<fg=yellow>!</> MINDUM_API_KEY is not set in your .env.');
+        $this->line('  Get one (or look up your existing one) at <fg=cyan>https://mindum.online/dashboard</>.');
+        $this->newLine();
+
+        $apiKey = (string) $this->secret('Paste your Mindum API key (starts with mk_)');
+
+        if ($apiKey === '') {
+            $this->error('No key provided. Aborting.');
+
+            return false;
+        }
+
+        if (! str_starts_with($apiKey, 'mk_')) {
+            $this->error('Invalid key format. Mindum API keys start with mk_ (e.g. mk_live_...). Aborting.');
+
+            return false;
+        }
+
+        // Set runtime config immediately so the rest of the install can
+        // proceed regardless of whether the user saves to .env.
+        config()->set('mindum.api_key', $apiKey);
+
+        if ($this->confirm('Save this key to your .env file?', true)) {
+            try {
+                $envPath = $this->writeApiKeyToEnv($apiKey);
+                $this->line('<fg=green>✓</> Saved <fg=cyan>MINDUM_API_KEY</> to '.$envPath);
+            } catch (Throwable $e) {
+                // Don't abort the install over a file-write failure — the
+                // runtime config already has the key. Just warn the user.
+                $this->warn('Could not write to .env ('.$e->getMessage().').');
+                $this->line('  Key set in runtime config for this run only; add manually to keep it.');
+            }
+        } else {
+            $this->line('<fg=gray>•</> Key set for this run only — you\'ll re-enter it next time.');
+        }
+
+        $this->newLine();
+
+        return true;
+    }
+
+    /**
+     * Persist MINDUM_API_KEY to the customer's .env file. Creates the file
+     * from .env.example if it doesn't exist yet (unusual but possible on a
+     * fresh checkout). Idempotent — replaces an existing MINDUM_API_KEY=
+     * line in place rather than duplicating.
+     *
+     * Returns the absolute path of the .env file written.
+     */
+    private function writeApiKeyToEnv(string $apiKey): string
+    {
+        $envPath = base_path('.env');
+        $examplePath = base_path('.env.example');
+
+        if (! file_exists($envPath)) {
+            if (file_exists($examplePath)) {
+                if (! @copy($examplePath, $envPath)) {
+                    throw new RuntimeException("Could not copy .env.example to .env at {$envPath}");
+                }
+            } else {
+                if (file_put_contents($envPath, "") === false) {
+                    throw new RuntimeException("Could not create .env at {$envPath}");
+                }
+            }
+        }
+
+        $contents = file_get_contents($envPath);
+        if ($contents === false) {
+            throw new RuntimeException("Could not read .env at {$envPath}");
+        }
+
+        $line = "MINDUM_API_KEY={$apiKey}";
+
+        if (preg_match('/^MINDUM_API_KEY=.*$/m', $contents)) {
+            // Replace existing line — preserves whatever comments / ordering
+            // the customer's .env already has.
+            $contents = preg_replace('/^MINDUM_API_KEY=.*$/m', $line, $contents);
+        } else {
+            // Append. Make sure we don't double-newline if the file already
+            // ends with one (typical) vs. doesn't (rare but possible).
+            $contents = rtrim($contents, "\n")."\n\n{$line}\n";
+        }
+
+        if (file_put_contents($envPath, $contents) === false) {
+            throw new RuntimeException("Could not write to .env at {$envPath}");
+        }
+
+        return $envPath;
     }
 
     private function stepListener(): callable
