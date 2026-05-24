@@ -40,9 +40,18 @@ class MindumApiClient
      *
      * @throws RuntimeException when the API key is missing or the request fails.
      */
-    public function startAnalyzeJob(array $manifest): array
+    public function startAnalyzeJob(array $manifest, ?string $model = null): array
     {
-        $response = $this->request('POST', '/api/analyze', ['manifest' => $manifest]);
+        $body = ['manifest' => $manifest];
+
+        // MS7 — when the customer picked a non-default model via the
+        // precheck alternatives prompt, pin it on the POST so the server
+        // doesn't fall back to the tier-preferred default.
+        if ($model !== null && $model !== '') {
+            $body['model'] = $model;
+        }
+
+        $response = $this->request('POST', '/api/analyze', $body);
 
         $required = ['job_id', 'status', 'total_batches'];
         foreach ($required as $key) {
@@ -208,6 +217,86 @@ class MindumApiClient
             ],
             'estimated_seconds_per_batch' => (int) ($response['estimated_seconds_per_batch'] ?? 83),
             'estimated_cost_per_candidate_usd' => (float) ($response['estimated_cost_per_candidate_usd'] ?? 0.009),
+        ];
+    }
+
+    /**
+     * POST /api/analyze/precheck
+     *
+     * MS7 — pre-submit affordability + cost preview. Sends candidate_count
+     * (+ optional model) and gets back whether the account's prepaid balance
+     * is sufficient for a scan of this size, alongside cheaper-model
+     * alternatives, a topup suggestion, and an upgrade-to hint.
+     *
+     * `can_proceed=false` is NOT an error — it's the cue for the InstallCommand
+     * to render the alternatives prompt. The only error case is HTTP 403
+     * (model_not_allowed_for_tier), which surfaces as a RuntimeException
+     * with the server's body in the message.
+     *
+     * @return array{
+     *     can_proceed: bool,
+     *     model: string,
+     *     current_tier: string,
+     *     candidate_count: int,
+     *     estimated_batches: int,
+     *     estimated_seconds: int,
+     *     estimated_cost_cents: int,
+     *     reserve_required_cents: int,
+     *     balance_cents: int,
+     *     alternatives: array<int, array{
+     *         model: string,
+     *         estimated_cost_cents: int,
+     *         reserve_required_cents: int,
+     *         estimated_seconds: int,
+     *         fits_balance: bool
+     *     }>,
+     *     topup_suggestion_cents: ?int,
+     *     upgrade_to: ?string
+     * }
+     *
+     * @throws RuntimeException on tier-disallowed model (403), auth failure,
+     *                          or network errors.
+     */
+    public function precheckAnalyze(int $candidateCount, ?string $model = null): array
+    {
+        $body = ['candidate_count' => $candidateCount];
+        if ($model !== null && $model !== '') {
+            $body['model'] = $model;
+        }
+
+        $response = $this->request('POST', '/api/analyze/precheck', $body);
+
+        $alternatives = [];
+        foreach ((array) ($response['alternatives'] ?? []) as $alt) {
+            if (! is_array($alt)) {
+                continue;
+            }
+            $alternatives[] = [
+                'model' => (string) ($alt['model'] ?? ''),
+                'estimated_cost_cents' => (int) ($alt['estimated_cost_cents'] ?? 0),
+                'reserve_required_cents' => (int) ($alt['reserve_required_cents'] ?? 0),
+                'estimated_seconds' => (int) ($alt['estimated_seconds'] ?? 0),
+                'fits_balance' => (bool) ($alt['fits_balance'] ?? false),
+            ];
+        }
+
+        return [
+            'can_proceed' => (bool) ($response['can_proceed'] ?? false),
+            'model' => (string) ($response['model'] ?? ''),
+            'current_tier' => (string) ($response['current_tier'] ?? ''),
+            'candidate_count' => (int) ($response['candidate_count'] ?? $candidateCount),
+            'estimated_batches' => (int) ($response['estimated_batches'] ?? 0),
+            'estimated_seconds' => (int) ($response['estimated_seconds'] ?? 0),
+            'estimated_cost_cents' => (int) ($response['estimated_cost_cents'] ?? 0),
+            'reserve_required_cents' => (int) ($response['reserve_required_cents'] ?? 0),
+            'balance_cents' => (int) ($response['balance_cents'] ?? 0),
+            'alternatives' => $alternatives,
+            'topup_suggestion_cents' => isset($response['topup_suggestion_cents'])
+                ? (int) $response['topup_suggestion_cents']
+                : null,
+            'upgrade_to' => isset($response['upgrade_to'])
+                ? (string) $response['upgrade_to']
+                : null,
         ];
     }
 

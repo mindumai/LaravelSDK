@@ -56,11 +56,24 @@ class AnalyzeRunner
      *         $model) and returns true to proceed or false to cancel.
      *         Per Phase E1 (Estimator) — no Anthropic spend until the
      *         customer confirms. If null, auto-proceeds (e.g. non-interactive).
+     * @param  callable(array<string,mixed> $precheck): string|null  $onInsufficientCredit
+     *         MS7 — called when the precheck endpoint returns can_proceed=false.
+     *         The callback receives the full precheck payload (balance_cents,
+     *         reserve_required_cents, alternatives, topup_suggestion_cents,
+     *         upgrade_to) and must return ONE of:
+     *           - 'switch:<model>' — try the precheck again with a cheaper model
+     *           - 'topup'          — abort with a top-up hint
+     *           - 'upgrade'        — abort with an upgrade hint
+     *           - 'cancel'         — abort with a plain cancellation message
+     *         If null (non-interactive / CI), defaults to 'cancel' — we NEVER
+     *         spend Anthropic money the customer hasn't confirmed they can
+     *         afford.
      */
     public function run(
         ?callable $onStep = null,
         ?callable $onPartialDecision = null,
         ?callable $onEstimateConfirm = null,
+        ?callable $onInsufficientCredit = null,
     ): AnalyzeResult {
         // Phase 1: detect any existing job to attach to.
         $existing = $this->client->currentJob();
@@ -211,13 +224,40 @@ class AnalyzeRunner
             'entries' => $entries,
         ];
 
-        // Phase E1 (Estimator): show the customer what they're about to spend
-        // before any Anthropic call goes out. Query server-side config for
-        // active model + per-batch timing + per-candidate cost, compute the
-        // estimate, hand it to the confirm callback. Cancel = no job created,
-        // no Anthropic spend.
-        $estimate = $this->computeEstimate(count($entries));
-        $this->emit($onStep, 'estimate_ready', $estimate);
+        // Phase E1 + MS7: pre-submit gate. precheck() returns the customer's
+        // affordability state alongside cost + time + alternatives. The
+        // legacy /analyze/config path stays as a fallback when the api is
+        // older than the SDK (precheck endpoint missing → 404).
+        //
+        // Loop because the customer can pick "switch to cheaper model" from
+        // the alternatives prompt — that re-runs precheck with the new model.
+        $resolvedModel = null;
+        $estimate = null;
+        while (true) {
+            $estimate = $this->obtainEstimate(count($entries), $resolvedModel);
+            $this->emit($onStep, 'estimate_ready', $estimate);
+
+            // MS7: only the precheck-source path knows about affordability.
+            // The legacy fallback can't gate — customer sees the estimate and
+            // confirms; the worker will catch insufficient-credit mid-scan.
+            if ($estimate['source'] === 'precheck' && ! $estimate['can_proceed']) {
+                $this->emit($onStep, 'insufficient_credit', $estimate);
+
+                $decision = $onInsufficientCredit !== null
+                    ? (string) $onInsufficientCredit($estimate)
+                    : 'cancel';
+
+                if (str_starts_with($decision, 'switch:')) {
+                    $resolvedModel = substr($decision, strlen('switch:'));
+                    // Loop back into precheck with the new model.
+                    continue;
+                }
+
+                throw new RuntimeException($this->cancelMessageFor($decision, $estimate));
+            }
+
+            break;
+        }
 
         $proceed = $onEstimateConfirm !== null
             ? (bool) $onEstimateConfirm($estimate)
@@ -230,7 +270,18 @@ class AnalyzeRunner
 
         $this->emit($onStep, 'api_submit', ['entry_count' => count($entries)]);
 
-        $jobInfo = $this->client->startAnalyzeJob($manifest);
+        // Pin the resolved model on the submit so the server doesn't fall
+        // back to tier-preferred when the user switched models in the
+        // alternatives prompt. For precheck-sourced estimates we pin the
+        // server-canonical model name (matches what the user agreed to).
+        // For legacy fallback the "model" string carries an "(estimated)"
+        // suffix and isn't a real model identifier — pass null to let the
+        // server pick the tier default.
+        $pinModel = $resolvedModel;
+        if ($pinModel === null && $estimate['source'] === 'precheck') {
+            $pinModel = $estimate['model'];
+        }
+        $jobInfo = $this->client->startAnalyzeJob($manifest, $pinModel);
 
         $this->emit($onStep, 'api_accepted', [
             'job_id' => $jobInfo['job_id'],
@@ -351,25 +402,68 @@ class AnalyzeRunner
     }
 
     /**
-     * Compute the pre-submit estimate shown to the customer in the confirm
-     * prompt. Calls GET /api/analyze/config to get the server-side active
-     * model + pricing + per-batch timing, then derives batches/time/cost
-     * from the candidate count.
+     * MS7 — try precheck first (the affordability-aware path); fall back to
+     * the legacy /analyze/config flow if the api doesn't have /precheck
+     * (HTTP 404) or precheck itself fails for network reasons.
      *
-     * If the config endpoint is unreachable (older api version, network
-     * blip), falls back to Sonnet 4.6 defaults so we can still show *some*
-     * estimate rather than failing the whole install.
+     * Returned shape carries a `source` discriminator the caller branches
+     * on:
+     *   - 'precheck' → also has can_proceed, balance_cents, reserve_required_cents,
+     *     alternatives[], topup_suggestion_cents, upgrade_to. The InstallCommand
+     *     uses these to render the alternatives prompt when can_proceed=false.
+     *   - 'legacy'   → only the original E1 fields (candidate_count, model,
+     *     batch_size, estimated_batches, estimated_seconds, estimated_cost_usd).
+     *     Affordability cannot be gated client-side; the worker will catch
+     *     insufficient-credit mid-scan instead.
      *
-     * @return array{
-     *     candidate_count: int,
-     *     model: string,
-     *     batch_size: int,
-     *     estimated_batches: int,
-     *     estimated_seconds: int,
-     *     estimated_cost_usd: float
-     * }
+     * Both shapes carry the original E1 fields so the existing render code
+     * in InstallCommand stays unchanged for the common path.
+     *
+     * @return array<string, mixed>
      */
-    private function computeEstimate(int $candidateCount): array
+    private function obtainEstimate(int $candidateCount, ?string $model): array
+    {
+        try {
+            $precheck = $this->client->precheckAnalyze($candidateCount, $model);
+
+            return [
+                'source' => 'precheck',
+                'candidate_count' => $precheck['candidate_count'],
+                'model' => $precheck['model'],
+                'current_tier' => $precheck['current_tier'],
+                'batch_size' => max(1, (int) ceil($precheck['candidate_count'] / max(1, $precheck['estimated_batches']))),
+                'estimated_batches' => $precheck['estimated_batches'],
+                'estimated_seconds' => $precheck['estimated_seconds'],
+                'estimated_cost_usd' => round($precheck['estimated_cost_cents'] / 100, 2),
+                'can_proceed' => $precheck['can_proceed'],
+                'balance_cents' => $precheck['balance_cents'],
+                'reserve_required_cents' => $precheck['reserve_required_cents'],
+                'estimated_cost_cents' => $precheck['estimated_cost_cents'],
+                'alternatives' => $precheck['alternatives'],
+                'topup_suggestion_cents' => $precheck['topup_suggestion_cents'],
+                'upgrade_to' => $precheck['upgrade_to'],
+            ];
+        } catch (\Throwable $e) {
+            // 404 → endpoint missing, older api. 403 → model_not_allowed_for_tier;
+            // bubble up because the customer needs to fix their request (the
+            // legacy path would only mask the real problem). Network errors
+            // bubble too — they'll fail the same way on the actual submit.
+            if (! str_contains($e->getMessage(), 'HTTP 404')) {
+                throw $e;
+            }
+
+            return $this->legacyEstimate($candidateCount);
+        }
+    }
+
+    /**
+     * Legacy /analyze/config-based estimate. Retained for SDK-newer-than-api
+     * deployments where /precheck doesn't exist yet. Loses the affordability
+     * gate — the worker catches insufficient credit mid-scan instead.
+     *
+     * @return array<string, mixed>
+     */
+    private function legacyEstimate(int $candidateCount): array
     {
         try {
             $config = $this->client->getAnalyzeConfig();
@@ -390,6 +484,7 @@ class AnalyzeRunner
         $estimatedCostUsd = $candidateCount * (float) $config['estimated_cost_per_candidate_usd'];
 
         return [
+            'source' => 'legacy',
             'candidate_count' => $candidateCount,
             'model' => (string) $config['model'],
             'batch_size' => $batchSize,
@@ -397,6 +492,22 @@ class AnalyzeRunner
             'estimated_seconds' => $estimatedSeconds,
             'estimated_cost_usd' => round($estimatedCostUsd, 2),
         ];
+    }
+
+    /**
+     * Build the cancellation RuntimeException message for an
+     * onInsufficientCredit return value. The InstallCommand's prompt
+     * renders the topup / upgrade URL hints at the prompt site (Symfony's
+     * error-box wrapping garbles long URLs), so the exception message
+     * itself just needs to identify the abort reason.
+     */
+    private function cancelMessageFor(string $decision, array $estimate): string
+    {
+        return match ($decision) {
+            'topup' => 'Insufficient credit — top up and re-run.',
+            'upgrade' => 'Insufficient credit — upgrade and re-run.',
+            default => 'Cancelled — no analysis submitted.',
+        };
     }
 
     /**

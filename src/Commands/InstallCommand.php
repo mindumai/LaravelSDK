@@ -53,6 +53,7 @@ class InstallCommand extends Command
                 onStep: $this->stepListener(),
                 onPartialDecision: $this->partialDecisionPrompt(),
                 onEstimateConfirm: $this->estimateConfirmPrompt(),
+                onInsufficientCredit: $this->insufficientCreditPrompt(),
             );
         } catch (RuntimeException $e) {
             $this->newLine();
@@ -369,10 +370,24 @@ class InstallCommand extends Command
             $minutes === 1 ? '' : 's',
         ));
 
-        $this->line(sprintf(
-            '  <fg=gray>Estimated cost:</>   ~<options=bold>$%.2f</>  <fg=gray>(±30%%; charged by Anthropic at scan time)</>',
-            $data['estimated_cost_usd'],
-        ));
+        // For precheck-sourced estimates we have the customer's prepaid
+        // balance — show it inline so they can see headroom at a glance.
+        // Legacy fallback paths skip these lines.
+        if (($data['source'] ?? null) === 'precheck') {
+            $this->line(sprintf(
+                '  <fg=gray>Estimated cost:</>   ~<options=bold>$%.2f</>  <fg=gray>(deducted from your prepaid balance)</>',
+                $data['estimated_cost_usd'],
+            ));
+            $this->line(sprintf(
+                '  <fg=gray>Your balance:</>     <options=bold>$%.2f</>',
+                ($data['balance_cents'] ?? 0) / 100,
+            ));
+        } else {
+            $this->line(sprintf(
+                '  <fg=gray>Estimated cost:</>   ~<options=bold>$%.2f</>  <fg=gray>(±30%%; charged by Anthropic at scan time)</>',
+                $data['estimated_cost_usd'],
+            ));
+        }
         $this->newLine();
     }
 
@@ -398,6 +413,165 @@ class InstallCommand extends Command
 
             return (bool) $this->confirm('Proceed with analysis?', true);
         };
+    }
+
+    /**
+     * MS7 — build the insufficient-credit decision callback. Renders the
+     * alternatives the server returned + topup / upgrade fallback options
+     * and maps the user's choice to one of:
+     *   - 'switch:<model>' — re-run precheck with a cheaper model
+     *   - 'topup'          — print a topup link and bail
+     *   - 'upgrade'        — print an upgrade link and bail
+     *   - 'cancel'         — bail with a plain cancellation
+     *
+     * Non-interactive mode (CI, `--no-interaction`) always returns 'cancel' —
+     * NEVER spend Anthropic money the customer hasn't explicitly authorized
+     * (same principle as the partial-resume prompt's D-P-7 default).
+     *
+     * `--force` is honored on the YES paths (E1 estimate confirm, scan-confirm),
+     * but NOT here: force-implying-credit would be a footgun. A customer who
+     * really wants to spend money on a scan they can't currently afford needs
+     * to interactively pick a switch / topup / upgrade.
+     */
+    private function insufficientCreditPrompt(): callable
+    {
+        return function (array $precheck): string {
+            $this->renderInsufficientCreditPanel($precheck);
+
+            // Non-interactive runs (CI, --no-interaction, scripts) abort
+            // rather than spend without confirmation.
+            if (! $this->input->isInteractive() || $this->option('no-interaction')) {
+                $this->line('  <fg=yellow>Non-interactive mode: aborting (no Anthropic spend without explicit confirmation).</>');
+                $this->newLine();
+
+                return 'cancel';
+            }
+
+            // Build the numbered choice menu. Affordable alternatives come
+            // first (the customer can immediately switch + continue), then
+            // topup, upgrade, cancel. Each row's index becomes a stable
+            // identifier we map back to the return value.
+            $choices = [];
+            $actions = [];
+
+            foreach ((array) $precheck['alternatives'] as $alt) {
+                if (! ($alt['fits_balance'] ?? false)) {
+                    continue;
+                }
+                $idx = (string) (count($choices) + 1);
+                $choices[$idx] = sprintf(
+                    'Switch to %s — est ~$%.2f, fits current balance',
+                    $alt['model'],
+                    $alt['estimated_cost_cents'] / 100,
+                );
+                $actions[$idx] = 'switch:'.$alt['model'];
+            }
+
+            if ($precheck['topup_suggestion_cents'] !== null) {
+                $idx = (string) (count($choices) + 1);
+                $choices[$idx] = sprintf(
+                    'Top up $%.2f and re-run',
+                    $precheck['topup_suggestion_cents'] / 100,
+                );
+                $actions[$idx] = 'topup';
+            }
+
+            if ($precheck['upgrade_to'] !== null) {
+                $idx = (string) (count($choices) + 1);
+                $choices[$idx] = sprintf(
+                    'Upgrade to %s tier and re-run',
+                    $precheck['upgrade_to'],
+                );
+                $actions[$idx] = 'upgrade';
+            }
+
+            $cancelIdx = (string) (count($choices) + 1);
+            $choices[$cancelIdx] = 'Cancel';
+            $actions[$cancelIdx] = 'cancel';
+
+            $this->line('  What would you like to do?');
+            $this->newLine();
+            foreach ($choices as $i => $label) {
+                $this->line(sprintf('    <fg=cyan>[%s]</> %s', $i, $label));
+            }
+            $this->newLine();
+
+            $choice = (string) $this->choice('Choice', array_keys($choices), $cancelIdx);
+            $decision = $actions[$choice] ?? 'cancel';
+
+            // Render the next-step hint at the prompt site so the URLs land
+            // as plain $this->line() output (Symfony's $this->error() box
+            // would wrap long lines and break substring matching in tests +
+            // wrap awkwardly in real terminals).
+            $this->renderDecisionHint($decision, $precheck);
+
+            return $decision;
+        };
+    }
+
+    /**
+     * Render the "what to do next" hint after the user picks topup / upgrade.
+     * Plain $this->line() output so URLs render flat and stay readable.
+     *
+     * @param  array<string, mixed>  $precheck
+     */
+    private function renderDecisionHint(string $decision, array $precheck): void
+    {
+        $apiUrl = rtrim((string) config('mindum.api_url', 'https://mindum.online'), '/');
+
+        if ($decision === 'topup') {
+            $this->newLine();
+            $this->line('<fg=cyan>Top up at:</>');
+            $this->getOutput()->writeln('  '.$apiUrl.'/dashboard/billing/topup');
+            if ($precheck['topup_suggestion_cents'] !== null) {
+                $this->line(sprintf(
+                    '<fg=gray>  Suggested amount: $%.2f</>',
+                    $precheck['topup_suggestion_cents'] / 100,
+                ));
+            }
+            $this->line('<fg=gray>  Then re-run <fg=cyan>php artisan mindum:install</>.</>');
+            $this->newLine();
+
+            return;
+        }
+
+        if ($decision === 'upgrade') {
+            $this->newLine();
+            $this->line('<fg=cyan>Upgrade at:</>');
+            $this->getOutput()->writeln('  '.$apiUrl.'/dashboard/billing');
+            if ($precheck['upgrade_to'] !== null) {
+                $this->line(sprintf('<fg=gray>  Suggested tier: %s.</>', $precheck['upgrade_to']));
+            }
+            $this->line('<fg=gray>  Then re-run <fg=cyan>php artisan mindum:install</>.</>');
+            $this->newLine();
+        }
+    }
+
+    /**
+     * Render the "you can't afford this scan" banner that precedes the
+     * alternatives menu. Mirrors the structure of the E1 "About to analyze"
+     * panel so the customer's mental model stays consistent — same
+     * fields, with explicit current-balance vs. required-credit lines so
+     * the gap is obvious.
+     *
+     * @param  array<string, mixed>  $precheck
+     */
+    private function renderInsufficientCreditPanel(array $precheck): void
+    {
+        $this->newLine();
+        $this->line('<fg=red;options=bold>Insufficient credit.</>');
+        $this->line(sprintf(
+            '  <fg=gray>Current balance:</>   <options=bold>$%.2f</>',
+            $precheck['balance_cents'] / 100,
+        ));
+        $this->line(sprintf(
+            '  <fg=gray>Required reserve:</>  <options=bold>$%.2f</>  <fg=gray>(for %s on %d candidate%s)</>',
+            $precheck['reserve_required_cents'] / 100,
+            $precheck['model'],
+            $precheck['candidate_count'],
+            $precheck['candidate_count'] === 1 ? '' : 's',
+        ));
+        $this->newLine();
     }
 
     /**

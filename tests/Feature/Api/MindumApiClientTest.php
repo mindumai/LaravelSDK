@@ -402,6 +402,162 @@ class MindumApiClientTest extends TestCase
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // precheckAnalyze — MS7
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_precheck_analyze_posts_candidate_count_and_optional_model(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/precheck' => Http::response([
+                'can_proceed' => true,
+                'model' => 'claude-sonnet-4-6',
+                'current_tier' => 'starter',
+                'candidate_count' => 250,
+                'estimated_batches' => 10,
+                'estimated_seconds' => 830,
+                'estimated_cost_cents' => 225,
+                'reserve_required_cents' => 300,
+                'balance_cents' => 2000,
+                'alternatives' => [],
+                'topup_suggestion_cents' => null,
+                'upgrade_to' => null,
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->precheckAnalyze(250, 'claude-sonnet-4-6');
+
+        $this->assertTrue($result['can_proceed']);
+        $this->assertSame('claude-sonnet-4-6', $result['model']);
+        $this->assertSame('starter', $result['current_tier']);
+        $this->assertSame(300, $result['reserve_required_cents']);
+        $this->assertSame(2000, $result['balance_cents']);
+        $this->assertSame([], $result['alternatives']);
+        $this->assertNull($result['topup_suggestion_cents']);
+
+        Http::assertSent(function ($request) {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/api/analyze/precheck')
+                && $request->hasHeader('Authorization', 'Bearer mk_test_abc123')
+                && $request['candidate_count'] === 250
+                && $request['model'] === 'claude-sonnet-4-6';
+        });
+    }
+
+    public function test_precheck_analyze_omits_model_when_null(): void
+    {
+        // Server should resolve to tier-preferred when SDK doesn't pin one.
+        Http::fake([
+            'api.mindum.ai/api/analyze/precheck' => Http::response([
+                'can_proceed' => true,
+                'model' => 'claude-haiku-4-5',
+                'current_tier' => 'free',
+                'candidate_count' => 50,
+                'estimated_batches' => 2,
+                'estimated_seconds' => 38,
+                'estimated_cost_cents' => 15,
+                'reserve_required_cents' => 10,
+                'balance_cents' => 500,
+                'alternatives' => [],
+                'topup_suggestion_cents' => null,
+                'upgrade_to' => null,
+            ], 200),
+        ]);
+
+        (new MindumApiClient)->precheckAnalyze(50);
+
+        Http::assertSent(fn ($req) => ! isset($req['model']));
+    }
+
+    public function test_precheck_analyze_parses_alternatives_and_suggestion(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/precheck' => Http::response([
+                'can_proceed' => false,
+                'model' => 'claude-sonnet-4-6',
+                'current_tier' => 'starter',
+                'candidate_count' => 250,
+                'estimated_batches' => 10,
+                'estimated_seconds' => 830,
+                'estimated_cost_cents' => 225,
+                'reserve_required_cents' => 300,
+                'balance_cents' => 150,
+                'alternatives' => [
+                    [
+                        'model' => 'claude-haiku-4-5',
+                        'estimated_cost_cents' => 75,
+                        'reserve_required_cents' => 50,
+                        'estimated_seconds' => 190,
+                        'fits_balance' => true,
+                    ],
+                ],
+                'topup_suggestion_cents' => 1000,
+                'upgrade_to' => 'growth',
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->precheckAnalyze(250, 'claude-sonnet-4-6');
+
+        $this->assertFalse($result['can_proceed']);
+        $this->assertCount(1, $result['alternatives']);
+        $this->assertSame('claude-haiku-4-5', $result['alternatives'][0]['model']);
+        $this->assertTrue($result['alternatives'][0]['fits_balance']);
+        $this->assertSame(1000, $result['topup_suggestion_cents']);
+        $this->assertSame('growth', $result['upgrade_to']);
+    }
+
+    public function test_precheck_analyze_throws_on_403_tier_disallowed(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response([
+                'error' => 'model_not_allowed_for_tier',
+                'requested_model' => 'claude-opus-4-7',
+            ], 403),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 403');
+
+        (new MindumApiClient)->precheckAnalyze(100, 'claude-opus-4-7');
+    }
+
+    public function test_precheck_analyze_pins_model_on_start_request(): void
+    {
+        // Confirms startAnalyzeJob carries the model field through when set —
+        // the parameter the MS7 "switch model" flow depends on.
+        Http::fake([
+            'api.mindum.ai/api/analyze' => Http::response([
+                'job_id' => '01HXY',
+                'status' => 'queued',
+                'total_batches' => 1,
+            ], 202),
+        ]);
+
+        (new MindumApiClient)->startAnalyzeJob(
+            ['entries' => [['kind' => 'action']]],
+            'claude-haiku-4-5',
+        );
+
+        Http::assertSent(fn ($req) => ($req['model'] ?? null) === 'claude-haiku-4-5');
+    }
+
+    public function test_start_analyze_job_omits_model_field_when_null(): void
+    {
+        // Default behavior must not change for callers who don't pass a
+        // model — the server's tier-preferred default kicks in.
+        Http::fake([
+            'api.mindum.ai/api/analyze' => Http::response([
+                'job_id' => '01HXY',
+                'status' => 'queued',
+                'total_batches' => 1,
+            ], 202),
+        ]);
+
+        (new MindumApiClient)->startAnalyzeJob(['entries' => []]);
+
+        Http::assertSent(fn ($req) => ! isset($req['model']));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // Custom api_url
     // ────────────────────────────────────────────────────────────────────
 

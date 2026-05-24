@@ -435,14 +435,17 @@ class InstallCommandTest extends TestCase
 
     public function test_estimate_shows_haiku_when_server_uses_haiku(): void
     {
-        // Server's /config returns Haiku numbers → SDK estimate reflects them.
+        // Server's /precheck returns Haiku → SDK estimate reflects it. MS7
+        // shifted the source-of-truth for the active model from /config to
+        // /precheck (the latter is now tier-aware), so the test asserts
+        // against precheck_returns.
         Http::fake($this->routedResponder([
             'current_then' => 204,
-            'config_returns' => [
+            'precheck_returns' => [
                 'model' => 'claude-haiku-4-5',
-                'batch_size' => 10,
-                'estimated_seconds_per_batch' => 19,
-                'estimated_cost_per_candidate_usd' => 0.003,
+                'estimated_batches' => 1,
+                'estimated_seconds' => 19,
+                'estimated_cost_cents' => 1,
             ],
             'post_returns' => ['job_id' => '01H', 'status' => 'queued', 'total_batches' => 1],
             'poll_sequence' => [
@@ -461,11 +464,15 @@ class InstallCommandTest extends TestCase
             ->assertExitCode(0);
     }
 
-    public function test_config_unreachable_falls_back_to_sonnet_estimate(): void
+    public function test_precheck_and_config_unreachable_uses_hardcoded_sonnet_fallback(): void
     {
-        // Older api version that doesn't have /config yet: SDK falls back
-        // to Sonnet defaults rather than failing the install.
+        // MS7: SDK calls /precheck first. When THAT 404s (older api), it
+        // falls back to /config. When /config ALSO 404s (even older api),
+        // it falls back to Sonnet defaults. End result: still ships an
+        // estimate to the customer rather than failing the install over a
+        // pre-submit preview.
         Http::fake([
+            'api.mindum.ai/api/analyze/precheck' => Http::response(['error' => 'not_found'], 404),
             'api.mindum.ai/api/analyze/config' => Http::response(['error' => 'not_found'], 404),
             'api.mindum.ai/api/analyze/jobs/current' => Http::response(null, 204),
             'api.mindum.ai/api/analyze' => Http::response([
@@ -492,6 +499,256 @@ class InstallCommandTest extends TestCase
         $this->artisan('mindum:install', ['--force' => true])
             ->expectsOutputToContain('About to analyze:')
             ->expectsOutputToContain('estimated') // the "claude-sonnet-4-6 (estimated)" fallback label
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // MS7 — Insufficient-credit prompt
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_insufficient_credit_user_switches_to_cheaper_model(): void
+    {
+        // First precheck returns can_proceed=false with Haiku as a viable
+        // alternative. User picks [1] Switch to Haiku → SDK re-runs precheck
+        // with the new model (this time fakeable as can_proceed=true) and
+        // POSTs /analyze with model=claude-haiku-4-5 pinned.
+        $precheckCallCount = 0;
+        Http::fake(function (HttpRequest $request) use (&$precheckCallCount) {
+            $url = $request->url();
+            $method = $request->method();
+
+            if ($method === 'GET' && str_ends_with($url, '/api/analyze/jobs/current')) {
+                return Http::response(null, 204);
+            }
+
+            if ($method === 'POST' && str_ends_with($url, '/api/analyze/precheck')) {
+                $precheckCallCount++;
+
+                // First call: unaffordable Sonnet.
+                if ($precheckCallCount === 1) {
+                    return Http::response([
+                        'can_proceed' => false,
+                        'model' => 'claude-sonnet-4-6',
+                        'current_tier' => 'starter',
+                        'candidate_count' => 1,
+                        'estimated_batches' => 1,
+                        'estimated_seconds' => 83,
+                        'estimated_cost_cents' => 9,
+                        'reserve_required_cents' => 300,
+                        'balance_cents' => 100,
+                        'alternatives' => [
+                            [
+                                'model' => 'claude-haiku-4-5',
+                                'estimated_cost_cents' => 3,
+                                'reserve_required_cents' => 50,
+                                'estimated_seconds' => 19,
+                                'fits_balance' => true,
+                            ],
+                        ],
+                        'topup_suggestion_cents' => 1000,
+                        'upgrade_to' => 'growth',
+                    ], 200);
+                }
+
+                // Second call: SDK re-precheck'd with Haiku → affordable.
+                return Http::response([
+                    'can_proceed' => true,
+                    'model' => 'claude-haiku-4-5',
+                    'current_tier' => 'starter',
+                    'candidate_count' => 1,
+                    'estimated_batches' => 1,
+                    'estimated_seconds' => 19,
+                    'estimated_cost_cents' => 3,
+                    'reserve_required_cents' => 50,
+                    'balance_cents' => 100,
+                    'alternatives' => [],
+                    'topup_suggestion_cents' => null,
+                    'upgrade_to' => null,
+                ], 200);
+            }
+
+            if ($method === 'POST' && str_ends_with($url, '/api/analyze')) {
+                return Http::response([
+                    'job_id' => '01SW',
+                    'status' => 'queued',
+                    'total_batches' => 1,
+                    'estimated_seconds' => 19,
+                ], 202);
+            }
+
+            if ($method === 'GET' && str_contains($url, '/api/analyze/jobs/01SW/results')) {
+                return Http::response([
+                    'job_id' => '01SW',
+                    'tools_count' => 1,
+                    'tools' => $this->fakeTools(['t1']),
+                    'is_partial' => false,
+                    'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+                ], 200);
+            }
+
+            if ($method === 'GET' && str_contains($url, '/api/analyze/jobs/01SW')) {
+                return Http::response($this->mergePollDefaults([
+                    'job_id' => '01SW',
+                    'status' => 'completed',
+                    'batches_completed' => 1,
+                    'total_batches' => 1,
+                    'tools_generated' => 1,
+                ]), 200);
+            }
+
+            return Http::response(['error' => 'unhandled', 'url' => $url], 500);
+        });
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Insufficient credit.')
+            ->expectsChoice('Choice', '1', ['1', '2', '3', '4'])
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+
+        $this->assertSame(2, $precheckCallCount, 'expected one precheck before switch + one after');
+
+        // Confirm the actual POST /api/analyze pinned the chosen model.
+        Http::assertSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), '/api/analyze')
+            && ($r['model'] ?? null) === 'claude-haiku-4-5');
+    }
+
+    public function test_insufficient_credit_user_chooses_topup_aborts_with_link(): void
+    {
+        // Only one alternative (Haiku at $1, fits_balance=false). Menu:
+        //   [1] Switch to claude-haiku-4-5 — doesn't fit, but still listed?
+        //   Actually only fits_balance=true alternatives appear, so the
+        //   Haiku row is skipped. Menu becomes [1] Top up [2] Upgrade [3] Cancel.
+        // User picks Top up → SDK errors with topup URL hint.
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'precheck_returns' => [
+                'can_proceed' => false,
+                'model' => 'claude-sonnet-4-6',
+                'balance_cents' => 5,
+                'reserve_required_cents' => 300,
+                'alternatives' => [
+                    [
+                        'model' => 'claude-haiku-4-5',
+                        'estimated_cost_cents' => 3,
+                        'reserve_required_cents' => 50,
+                        'estimated_seconds' => 19,
+                        'fits_balance' => false,
+                    ],
+                ],
+                'topup_suggestion_cents' => 1000,
+                'upgrade_to' => 'growth',
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Insufficient credit.')
+            ->expectsChoice('Choice', '1', ['1', '2', '3'])
+            ->expectsOutputToContain('Top up at:')
+            ->expectsOutputToContain('https://api.mindum.ai/dashboard/billing/topup')
+            ->expectsOutputToContain('Insufficient credit — top up and re-run.')
+            ->assertExitCode(1);
+    }
+
+    public function test_insufficient_credit_user_chooses_cancel(): void
+    {
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'precheck_returns' => [
+                'can_proceed' => false,
+                'model' => 'claude-sonnet-4-6',
+                'balance_cents' => 5,
+                'reserve_required_cents' => 300,
+                'alternatives' => [],
+                'topup_suggestion_cents' => 1000,
+                'upgrade_to' => 'growth',
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Insufficient credit.')
+            // alternatives=[] → menu is [1] Top up [2] Upgrade [3] Cancel.
+            ->expectsChoice('Choice', '3', ['1', '2', '3'])
+            ->expectsOutputToContain('Cancelled — no analysis submitted.')
+            ->assertExitCode(1);
+    }
+
+    public function test_insufficient_credit_in_non_interactive_mode_aborts(): void
+    {
+        // CI / scripted runs must NEVER auto-spend on a scan the customer
+        // hasn't explicitly authorized. --no-interaction routes through
+        // 'cancel'; --force is irrelevant for this gate (force-implying-
+        // credit would be a footgun).
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'precheck_returns' => [
+                'can_proceed' => false,
+                'model' => 'claude-sonnet-4-6',
+                'balance_cents' => 5,
+                'reserve_required_cents' => 300,
+                'alternatives' => [],
+                'topup_suggestion_cents' => 1000,
+                'upgrade_to' => 'growth',
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true, '--no-interaction' => true])
+            ->expectsOutputToContain('Insufficient credit')
+            ->expectsOutputToContain('Non-interactive mode: aborting')
+            ->assertExitCode(1);
+    }
+
+    public function test_precheck_403_tier_disallowed_model_aborts(): void
+    {
+        // Model the customer pinned isn't allowed by their tier. Precheck
+        // returns 403 with the same shape as POST /analyze's 403. SDK
+        // surfaces the server's error message and exits non-zero — no
+        // alternatives prompt (the model is structurally disallowed,
+        // switching to a tier-allowed model needs config changes the
+        // SDK can't make on the customer's behalf).
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'precheck_status' => 403,
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('HTTP 403')
+            ->assertExitCode(1);
+    }
+
+    public function test_balance_line_appears_in_estimate_panel_for_precheck_source(): void
+    {
+        // Precheck path renders the customer's current balance inline in the
+        // "About to analyze" panel — the legacy /config path doesn't have
+        // this data and doesn't render the line.
+        //
+        // Note: the actual dollar amount can't be asserted via
+        // expectsOutputToContain because Symfony's OutputFormatter eats the
+        // numeric content inside <options=bold>…</> tags when the test
+        // BufferedOutput is non-decorated. The label "Your balance:" alone
+        // is enough to prove the source=='precheck' branch ran.
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'precheck_returns' => [
+                'can_proceed' => true,
+                'balance_cents' => 4250,
+            ],
+            'post_returns' => ['job_id' => '01BAL', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['t1']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('About to analyze:')
+            ->expectsOutputToContain('Your balance:')
+            ->expectsOutputToContain('deducted from your prepaid balance')
             ->expectsOutputToContain('Install complete.')
             ->assertExitCode(0);
     }
@@ -703,6 +960,8 @@ class InstallCommandTest extends TestCase
      *   - post_error_status / post_error_body: failure path for POST
      *   - poll_sequence: list of status responses for GET /jobs/{id}
      *   - results: body for GET /jobs/{id}/results
+     *   - precheck_returns: body for POST /api/analyze/precheck (MS7)
+     *   - precheck_status: HTTP status for precheck (404 → legacy fallback)
      *
      * @param  array<string, mixed>  $scenario
      */
@@ -726,6 +985,33 @@ class InstallCommandTest extends TestCase
                     'estimated_seconds_per_batch' => 83,
                     'estimated_cost_per_candidate_usd' => 0.009,
                 ], $scenario['config_returns'] ?? []), 200);
+            }
+
+            // POST /api/analyze/precheck — MS7. Defaults to can_proceed=true
+            // so the bulk of existing tests don't have to opt into precheck
+            // wiring. Scenarios that want the unaffordable path set
+            // precheck_returns explicitly. precheck_status=404 simulates an
+            // older api so the legacy /config fallback fires.
+            if ($method === 'POST' && str_ends_with($url, '/api/analyze/precheck')) {
+                $status = (int) ($scenario['precheck_status'] ?? 200);
+                if ($status !== 200) {
+                    return Http::response(['error' => 'simulated'], $status);
+                }
+
+                return Http::response(array_merge([
+                    'can_proceed' => true,
+                    'model' => 'claude-sonnet-4-6',
+                    'current_tier' => 'starter',
+                    'candidate_count' => 1,
+                    'estimated_batches' => 1,
+                    'estimated_seconds' => 83,
+                    'estimated_cost_cents' => 9,
+                    'reserve_required_cents' => 30,
+                    'balance_cents' => 2000,
+                    'alternatives' => [],
+                    'topup_suggestion_cents' => null,
+                    'upgrade_to' => null,
+                ], $scenario['precheck_returns'] ?? []), 200);
             }
 
             // GET /api/analyze/jobs/current

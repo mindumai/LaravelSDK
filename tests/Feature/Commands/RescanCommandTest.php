@@ -154,6 +154,25 @@ class RescanCommandTest extends TestCase
             $url = $request->url();
             $method = $request->method();
 
+            // MS7 — precheck (server-canonical estimate + affordability). Defaults to
+            // can_proceed=true so existing Rescan tests don't have to opt in.
+            if ($method === 'POST' && str_ends_with($url, '/api/analyze/precheck')) {
+                return Http::response(array_merge([
+                    'can_proceed' => true,
+                    'model' => 'claude-sonnet-4-6',
+                    'current_tier' => 'starter',
+                    'candidate_count' => 1,
+                    'estimated_batches' => 1,
+                    'estimated_seconds' => 83,
+                    'estimated_cost_cents' => 9,
+                    'reserve_required_cents' => 30,
+                    'balance_cents' => 2000,
+                    'alternatives' => [],
+                    'topup_suggestion_cents' => null,
+                    'upgrade_to' => null,
+                ], $scenario['precheck_returns'] ?? []), 200);
+            }
+
             if ($method === 'GET' && str_ends_with($url, '/api/analyze/jobs/current')) {
                 $current = $scenario['current_then'] ?? 204;
                 if ($current === 204) {
