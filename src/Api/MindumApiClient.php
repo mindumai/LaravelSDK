@@ -171,6 +171,47 @@ class MindumApiClient
     }
 
     /**
+     * GET /api/analyze/config
+     *
+     * Returns the server-side active model + pricing + per-batch timing,
+     * so the SDK can show a pre-submit cost estimate to the customer
+     * before any Anthropic spend kicks off.
+     *
+     * Per the Phase E1 (Estimator) feature added 2026-05-24.
+     *
+     * @return array{
+     *     model: string,
+     *     batch_size: int,
+     *     pricing: array{
+     *         input_cents_per_million: int,
+     *         output_cents_per_million: int
+     *     },
+     *     estimated_seconds_per_batch: int,
+     *     estimated_cost_per_candidate_usd: float
+     * }
+     *
+     * @throws RuntimeException on auth failure, network errors, or
+     *                          unexpected non-200 responses.
+     */
+    public function getAnalyzeConfig(): array
+    {
+        $response = $this->request('GET', '/api/analyze/config');
+
+        $pricing = is_array($response['pricing'] ?? null) ? $response['pricing'] : [];
+
+        return [
+            'model' => (string) ($response['model'] ?? 'claude-sonnet-4-6'),
+            'batch_size' => (int) ($response['batch_size'] ?? 10),
+            'pricing' => [
+                'input_cents_per_million' => (int) ($pricing['input_cents_per_million'] ?? 300),
+                'output_cents_per_million' => (int) ($pricing['output_cents_per_million'] ?? 1500),
+            ],
+            'estimated_seconds_per_batch' => (int) ($response['estimated_seconds_per_batch'] ?? 83),
+            'estimated_cost_per_candidate_usd' => (float) ($response['estimated_cost_per_candidate_usd'] ?? 0.009),
+        ];
+    }
+
+    /**
      * POST /api/analyze/jobs/{jobId}/resume
      *
      * Re-dispatches a failed job with partial progress. Server validates per

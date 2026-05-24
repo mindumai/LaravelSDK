@@ -49,9 +49,19 @@ class AnalyzeRunner
      *         Called when /current returns a failed-with-partial job. Must return
      *         one of: 'download' | 'resume' | 'fresh' | 'cancel'. If null (e.g.
      *         non-interactive CI), defaults to 'download' (safest per D-P-7).
+     * @param  callable(array<string,mixed> $estimate): bool|null  $onEstimateConfirm
+     *         Called after the scanner finishes but BEFORE the manifest is
+     *         submitted to the API. Receives an estimate ($candidate_count,
+     *         $estimated_batches, $estimated_seconds, $estimated_cost_usd,
+     *         $model) and returns true to proceed or false to cancel.
+     *         Per Phase E1 (Estimator) — no Anthropic spend until the
+     *         customer confirms. If null, auto-proceeds (e.g. non-interactive).
      */
-    public function run(?callable $onStep = null, ?callable $onPartialDecision = null): AnalyzeResult
-    {
+    public function run(
+        ?callable $onStep = null,
+        ?callable $onPartialDecision = null,
+        ?callable $onEstimateConfirm = null,
+    ): AnalyzeResult {
         // Phase 1: detect any existing job to attach to.
         $existing = $this->client->currentJob();
 
@@ -201,6 +211,23 @@ class AnalyzeRunner
             'entries' => $entries,
         ];
 
+        // Phase E1 (Estimator): show the customer what they're about to spend
+        // before any Anthropic call goes out. Query server-side config for
+        // active model + per-batch timing + per-candidate cost, compute the
+        // estimate, hand it to the confirm callback. Cancel = no job created,
+        // no Anthropic spend.
+        $estimate = $this->computeEstimate(count($entries));
+        $this->emit($onStep, 'estimate_ready', $estimate);
+
+        $proceed = $onEstimateConfirm !== null
+            ? (bool) $onEstimateConfirm($estimate)
+            : true;
+
+        if (! $proceed) {
+            $this->emit($onStep, 'estimate_declined', $estimate);
+            throw new RuntimeException('Cancelled — no analysis submitted.');
+        }
+
         $this->emit($onStep, 'api_submit', ['entry_count' => count($entries)]);
 
         $jobInfo = $this->client->startAnalyzeJob($manifest);
@@ -321,6 +348,55 @@ class AnalyzeRunner
             isPartial: $results['is_partial'],
             partialMeta: $results['partial_meta'],
         );
+    }
+
+    /**
+     * Compute the pre-submit estimate shown to the customer in the confirm
+     * prompt. Calls GET /api/analyze/config to get the server-side active
+     * model + pricing + per-batch timing, then derives batches/time/cost
+     * from the candidate count.
+     *
+     * If the config endpoint is unreachable (older api version, network
+     * blip), falls back to Sonnet 4.6 defaults so we can still show *some*
+     * estimate rather than failing the whole install.
+     *
+     * @return array{
+     *     candidate_count: int,
+     *     model: string,
+     *     batch_size: int,
+     *     estimated_batches: int,
+     *     estimated_seconds: int,
+     *     estimated_cost_usd: float
+     * }
+     */
+    private function computeEstimate(int $candidateCount): array
+    {
+        try {
+            $config = $this->client->getAnalyzeConfig();
+        } catch (\Throwable $e) {
+            // Conservative fallback. Show user a number based on Sonnet
+            // defaults — if it's wildly off they'll know to cancel.
+            $config = [
+                'model' => 'claude-sonnet-4-6 (estimated)',
+                'batch_size' => 10,
+                'estimated_seconds_per_batch' => 83,
+                'estimated_cost_per_candidate_usd' => 0.009,
+            ];
+        }
+
+        $batchSize = max(1, (int) $config['batch_size']);
+        $estimatedBatches = (int) ceil($candidateCount / $batchSize);
+        $estimatedSeconds = $estimatedBatches * (int) $config['estimated_seconds_per_batch'];
+        $estimatedCostUsd = $candidateCount * (float) $config['estimated_cost_per_candidate_usd'];
+
+        return [
+            'candidate_count' => $candidateCount,
+            'model' => (string) $config['model'],
+            'batch_size' => $batchSize,
+            'estimated_batches' => $estimatedBatches,
+            'estimated_seconds' => $estimatedSeconds,
+            'estimated_cost_usd' => round($estimatedCostUsd, 2),
+        ];
     }
 
     /**

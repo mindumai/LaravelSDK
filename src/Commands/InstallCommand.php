@@ -52,6 +52,7 @@ class InstallCommand extends Command
             $result = $runner->run(
                 onStep: $this->stepListener(),
                 onPartialDecision: $this->partialDecisionPrompt(),
+                onEstimateConfirm: $this->estimateConfirmPrompt(),
             );
         } catch (RuntimeException $e) {
             $this->newLine();
@@ -131,6 +132,8 @@ class InstallCommand extends Command
                     $data['skipped'],
                     $data['errors'],
                 )),
+                'estimate_ready' => $this->renderEstimate($data),
+                'estimate_declined' => null, // The throw + error handler prints "Cancelled" already.
                 'api_submit' => $this->line('<fg=gray>•</> Uploading manifest to '.config('mindum.api_url').'...'),
                 'api_accepted' => $this->renderApiAccepted($data),
                 'poll_progress' => $this->renderProgress($data),
@@ -221,6 +224,66 @@ class InstallCommand extends Command
                 '4' => 'cancel',
                 default => 'download',
             };
+        };
+    }
+
+    /**
+     * Pretty-print the pre-submit estimate from Phase E1. Format mirrors
+     * the cost preview a thoughtful SaaS product would show before billing.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function renderEstimate(array $data): void
+    {
+        $this->newLine();
+        $this->line('<fg=cyan;options=bold>About to analyze:</>');
+        $this->line(sprintf(
+            '  <fg=gray>Model:</>            <options=bold>%s</>',
+            $data['model'],
+        ));
+        $this->line(sprintf(
+            '  <fg=gray>Candidates:</>       <options=bold>%d</>  (in %d batch%s of %d)',
+            $data['candidate_count'],
+            $data['estimated_batches'],
+            $data['estimated_batches'] === 1 ? '' : 'es',
+            $data['batch_size'],
+        ));
+
+        $minutes = max(1, (int) round($data['estimated_seconds'] / 60));
+        $this->line(sprintf(
+            '  <fg=gray>Estimated time:</>   ~<options=bold>%d</> minute%s',
+            $minutes,
+            $minutes === 1 ? '' : 's',
+        ));
+
+        $this->line(sprintf(
+            '  <fg=gray>Estimated cost:</>   ~<options=bold>$%.2f</>  <fg=gray>(±30%%; charged by Anthropic at scan time)</>',
+            $data['estimated_cost_usd'],
+        ));
+        $this->newLine();
+    }
+
+    /**
+     * Build the estimate-confirmation callback. Per Phase E1 (Estimator):
+     * the customer sees the cost + time + model BEFORE any Anthropic spend
+     * starts. Returns true to proceed, false to cancel cleanly.
+     *
+     * Skipped (auto-yes) when:
+     *   - `--force` is passed (consistent with the existing scan-confirm prompt)
+     *   - `--no-interaction` is passed (CI/scripts)
+     *   - The input stream is non-interactive (piped scripts)
+     */
+    private function estimateConfirmPrompt(): callable
+    {
+        return function (array $estimate): bool {
+            if ($this->option('force')
+                || $this->option('no-interaction')
+                || ! $this->input->isInteractive()
+            ) {
+                return true;
+            }
+
+            return (bool) $this->confirm('Proceed with analysis?', true);
         };
     }
 

@@ -296,6 +296,52 @@ class MindumApiClientTest extends TestCase
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // getAnalyzeConfig — Phase E1 (Estimator)
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_get_analyze_config_returns_model_pricing_and_heuristics(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/config' => Http::response([
+                'model' => 'claude-sonnet-4-6',
+                'batch_size' => 10,
+                'pricing' => [
+                    'input_cents_per_million' => 300,
+                    'output_cents_per_million' => 1500,
+                ],
+                'estimated_seconds_per_batch' => 83,
+                'estimated_cost_per_candidate_usd' => 0.009,
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->getAnalyzeConfig();
+
+        $this->assertSame('claude-sonnet-4-6', $result['model']);
+        $this->assertSame(10, $result['batch_size']);
+        $this->assertSame(300, $result['pricing']['input_cents_per_million']);
+        $this->assertSame(83, $result['estimated_seconds_per_batch']);
+        $this->assertSame(0.009, $result['estimated_cost_per_candidate_usd']);
+
+        Http::assertSent(function ($request) {
+            return $request->method() === 'GET'
+                && str_contains($request->url(), '/api/analyze/config')
+                && $request->hasHeader('Authorization', 'Bearer mk_test_abc123');
+        });
+    }
+
+    public function test_get_analyze_config_throws_on_http_error(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response(['error' => 'invalid_api_key'], 401),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 401');
+
+        (new MindumApiClient)->getAnalyzeConfig();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // resumeJob — Phase P5 / Feature B
     // ────────────────────────────────────────────────────────────────────
 

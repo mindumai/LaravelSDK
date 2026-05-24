@@ -183,6 +183,151 @@ class InstallCommandTest extends TestCase
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // Phase E1 — Pre-submit estimate + confirmation
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_estimate_is_shown_with_model_candidates_time_and_cost(): void
+    {
+        // --force auto-confirms, so the install completes; we just want to
+        // assert the estimate banner is rendered with the salient numbers.
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'config_returns' => [
+                'model' => 'claude-sonnet-4-6',
+                'batch_size' => 10,
+                'estimated_seconds_per_batch' => 83,
+                'estimated_cost_per_candidate_usd' => 0.009,
+            ],
+            'post_returns' => ['job_id' => '01ABC', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 2],
+            ],
+            'results' => [
+                'tools_count' => 2,
+                'tools' => $this->fakeTools(['create_post', 'list_posts']),
+                'cost_summary' => ['input_tokens' => 1200, 'output_tokens' => 800, 'approximate_usd' => 0.02],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('About to analyze:')
+            ->expectsOutputToContain('claude-sonnet-4-6')
+            ->expectsOutputToContain('Estimated time:')
+            ->expectsOutputToContain('Estimated cost:')
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+    }
+
+    public function test_no_to_estimate_prompt_cancels_without_creating_job(): void
+    {
+        // User declines at the estimate prompt → SDK throws "Cancelled" and
+        // exits 1, no POST /api/analyze ever fires (= no Anthropic spend).
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+        ]));
+
+        // The fixture app's mindum:install asks two prompts when --force is
+        // omitted: (1) "Scan this app?" then (2) "Proceed with analysis?".
+        // We confirm the first and decline the second.
+        $this->artisan('mindum:install')
+            ->expectsConfirmation('Scan this app and write tool classes to '.$this->toolsPath.'?', 'yes')
+            ->expectsOutputToContain('About to analyze:')
+            ->expectsConfirmation('Proceed with analysis?', 'no')
+            ->expectsOutputToContain('Cancelled')
+            ->assertExitCode(1);
+
+        // No POST happened.
+        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), '/api/analyze'));
+    }
+
+    public function test_force_flag_skips_estimate_prompt(): void
+    {
+        // --force should bypass BOTH prompts (scan-confirm + estimate-confirm).
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01F', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['t1']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        // No expectsConfirmation calls — both prompts should be skipped.
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('About to analyze:')
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+    }
+
+    public function test_estimate_shows_haiku_when_server_uses_haiku(): void
+    {
+        // Server's /config returns Haiku numbers → SDK estimate reflects them.
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'config_returns' => [
+                'model' => 'claude-haiku-4-5',
+                'batch_size' => 10,
+                'estimated_seconds_per_batch' => 19,
+                'estimated_cost_per_candidate_usd' => 0.003,
+            ],
+            'post_returns' => ['job_id' => '01H', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['t1']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('claude-haiku-4-5')
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+    }
+
+    public function test_config_unreachable_falls_back_to_sonnet_estimate(): void
+    {
+        // Older api version that doesn't have /config yet: SDK falls back
+        // to Sonnet defaults rather than failing the install.
+        Http::fake([
+            'api.mindum.ai/api/analyze/config' => Http::response(['error' => 'not_found'], 404),
+            'api.mindum.ai/api/analyze/jobs/current' => Http::response(null, 204),
+            'api.mindum.ai/api/analyze' => Http::response([
+                'job_id' => '01ZZ',
+                'status' => 'queued',
+                'total_batches' => 1,
+                'estimated_seconds' => 83,
+            ], 202),
+            'api.mindum.ai/api/analyze/jobs/01ZZ' => Http::response($this->mergePollDefaults([
+                'job_id' => '01ZZ',
+                'status' => 'completed',
+                'batches_completed' => 1,
+                'total_batches' => 1,
+                'tools_generated' => 1,
+            ]), 200),
+            'api.mindum.ai/api/analyze/jobs/01ZZ/results' => Http::response([
+                'job_id' => '01ZZ',
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['t1']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ], 200),
+        ]);
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('About to analyze:')
+            ->expectsOutputToContain('estimated') // the "claude-sonnet-4-6 (estimated)" fallback label
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // Phase P3 / P5 — Failed-with-partial decision flow
     // ────────────────────────────────────────────────────────────────────
 
@@ -399,6 +544,20 @@ class InstallCommandTest extends TestCase
         return function (HttpRequest $request) use (&$pollIndex, $scenario) {
             $url = $request->url();
             $method = $request->method();
+
+            // GET /api/analyze/config — Phase E1 (Estimator)
+            if ($method === 'GET' && str_ends_with($url, '/api/analyze/config')) {
+                return Http::response(array_merge([
+                    'model' => 'claude-sonnet-4-6',
+                    'batch_size' => 10,
+                    'pricing' => [
+                        'input_cents_per_million' => 300,
+                        'output_cents_per_million' => 1500,
+                    ],
+                    'estimated_seconds_per_batch' => 83,
+                    'estimated_cost_per_candidate_usd' => 0.009,
+                ], $scenario['config_returns'] ?? []), 200);
+            }
 
             // GET /api/analyze/jobs/current
             if ($method === 'GET' && str_ends_with($url, '/api/analyze/jobs/current')) {
