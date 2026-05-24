@@ -103,12 +103,27 @@ class MindumApiClient
      * GET /api/analyze/jobs/{jobId}/results
      *
      * Latches `tools_downloaded=true` server-side on first successful fetch.
-     * Caller should only invoke this when polled status is 'completed'.
+     * The API returns either a completed job's full tool set (is_partial=false)
+     * or a failed-with-batches job's partial set (is_partial=true with
+     * partial_meta containing batch progress + resumability flag).
+     *
+     * Caller decides what to do with `is_partial=true` — the SDK's
+     * AnalyzeRunner currently presents the user with a download/resume/fresh
+     * prompt before invoking this method, so by the time we get here the
+     * caller has already opted to consume the partial set.
      *
      * @return array{
      *     job_id: string,
      *     tools_count: int,
      *     tools: array<int, array<string, mixed>>,
+     *     is_partial: bool,
+     *     partial_meta: array{
+     *         batches_completed: int,
+     *         total_batches: int,
+     *         batches_remaining: int,
+     *         error_message: ?string,
+     *         resumable: bool
+     *     }|null,
      *     cost_summary: array{
      *         input_tokens: int,
      *         output_tokens: int,
@@ -116,7 +131,7 @@ class MindumApiClient
      *     }
      * }
      *
-     * @throws RuntimeException on 409 (job not completed yet), 404, or network errors.
+     * @throws RuntimeException on 409 (job not in a downloadable state), 404, or network errors.
      */
     public function fetchResults(string $jobId): array
     {
@@ -127,16 +142,67 @@ class MindumApiClient
         }
 
         $cost = is_array($response['cost_summary'] ?? null) ? $response['cost_summary'] : [];
+        $isPartial = (bool) ($response['is_partial'] ?? false);
+
+        $partialMeta = null;
+        if ($isPartial && is_array($response['partial_meta'] ?? null)) {
+            $meta = $response['partial_meta'];
+            $partialMeta = [
+                'batches_completed' => (int) ($meta['batches_completed'] ?? 0),
+                'total_batches' => (int) ($meta['total_batches'] ?? 0),
+                'batches_remaining' => (int) ($meta['batches_remaining'] ?? 0),
+                'error_message' => isset($meta['error_message']) ? (string) $meta['error_message'] : null,
+                'resumable' => (bool) ($meta['resumable'] ?? false),
+            ];
+        }
 
         return [
             'job_id' => (string) ($response['job_id'] ?? $jobId),
             'tools_count' => (int) ($response['tools_count'] ?? count($response['tools'])),
             'tools' => $response['tools'],
+            'is_partial' => $isPartial,
+            'partial_meta' => $partialMeta,
             'cost_summary' => [
                 'input_tokens' => (int) ($cost['input_tokens'] ?? 0),
                 'output_tokens' => (int) ($cost['output_tokens'] ?? 0),
                 'approximate_usd' => (float) ($cost['approximate_usd'] ?? 0.0),
             ],
+        ];
+    }
+
+    /**
+     * POST /api/analyze/jobs/{jobId}/resume
+     *
+     * Re-dispatches a failed job with partial progress. Server validates per
+     * Docs/Partial_Resume_Plan.md D-P-4:
+     *   - 404 — job doesn't exist or not in caller's account
+     *   - 409 — non-failed status, no batches completed, or no remaining batches
+     *   - 410 — outside the 30-day resume window
+     *
+     * Returns 202 + the job's re-queued state on success.
+     *
+     * @return array{
+     *     job_id: string,
+     *     status: string,
+     *     batches_completed: int,
+     *     total_batches: int,
+     *     batches_remaining: int,
+     *     message: string
+     * }
+     *
+     * @throws RuntimeException with the server's error_message attached.
+     */
+    public function resumeJob(string $jobId): array
+    {
+        $response = $this->request('POST', "/api/analyze/jobs/{$jobId}/resume");
+
+        return [
+            'job_id' => (string) ($response['job_id'] ?? $jobId),
+            'status' => (string) ($response['status'] ?? 'queued'),
+            'batches_completed' => (int) ($response['batches_completed'] ?? 0),
+            'total_batches' => (int) ($response['total_batches'] ?? 0),
+            'batches_remaining' => (int) ($response['batches_remaining'] ?? 0),
+            'message' => (string) ($response['message'] ?? ''),
         ];
     }
 

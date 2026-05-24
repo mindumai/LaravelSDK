@@ -43,7 +43,14 @@ class AnalyzeRunner
         private readonly ToolWriter $writer,
     ) {}
 
-    public function run(?callable $onStep = null): AnalyzeResult
+    /**
+     * @param  callable(string $event, array<string,mixed> $data): void|null  $onStep
+     * @param  callable(array<string,mixed> $partialJob): string|null  $onPartialDecision
+     *         Called when /current returns a failed-with-partial job. Must return
+     *         one of: 'download' | 'resume' | 'fresh' | 'cancel'. If null (e.g.
+     *         non-interactive CI), defaults to 'download' (safest per D-P-7).
+     */
+    public function run(?callable $onStep = null, ?callable $onPartialDecision = null): AnalyzeResult
     {
         // Phase 1: detect any existing job to attach to.
         $existing = $this->client->currentJob();
@@ -83,6 +90,77 @@ class AnalyzeRunner
                 scannerErrors: [],
                 onStep: $onStep,
             );
+        }
+
+        // Per Docs/Partial_Resume_Plan.md Phase P3: failed-with-partial job
+        // detected. Ask the user (via $onPartialDecision) what to do. In
+        // non-interactive mode default to 'download' per D-P-7 (no surprise
+        // Anthropic spend).
+        if ($existing !== null
+            && $existing['status'] === 'failed'
+            && ($existing['batches_completed'] ?? 0) > 0
+        ) {
+            $this->emit($onStep, 'attach_failed_with_partial', $existing);
+
+            $decision = $onPartialDecision !== null
+                ? $onPartialDecision($existing)
+                : 'download';
+
+            switch ($decision) {
+                case 'download':
+                    $this->emit($onStep, 'partial_decision', ['choice' => 'download']);
+
+                    return $this->downloadAndWrite(
+                        jobId: $existing['job_id'],
+                        attached: true,
+                        scannerEntries: 0,
+                        scannerSkipped: 0,
+                        scannerErrors: [],
+                        onStep: $onStep,
+                    );
+
+                case 'resume':
+                    $this->emit($onStep, 'partial_decision', ['choice' => 'resume']);
+
+                    $resumeInfo = $this->client->resumeJob($existing['job_id']);
+                    $this->emit($onStep, 'resume_started', $resumeInfo);
+
+                    $finalJob = $this->pollUntilTerminal(
+                        $existing['job_id'],
+                        (int) $existing['batches_completed'],
+                        $onStep,
+                    );
+
+                    if ($finalJob['status'] !== 'completed') {
+                        throw new RuntimeException(
+                            'Analysis failed after resume: '.($finalJob['error_message'] ?? 'unknown error'),
+                        );
+                    }
+
+                    return $this->downloadAndWrite(
+                        jobId: $existing['job_id'],
+                        attached: true,
+                        scannerEntries: 0,
+                        scannerSkipped: 0,
+                        scannerErrors: [],
+                        onStep: $onStep,
+                    );
+
+                case 'fresh':
+                    // Fall through to the fresh-scan path. We deliberately
+                    // do NOT call resumeJob — the partial job stays in 'failed'
+                    // status; the new scan creates a brand new AnalyzeJob row.
+                    // If the manifest hashes match, the worker's prior-completed
+                    // dedup won't fire (the prior is failed, not completed),
+                    // so the new job runs from scratch.
+                    $this->emit($onStep, 'partial_decision', ['choice' => 'fresh']);
+                    break;
+
+                case 'cancel':
+                default:
+                    $this->emit($onStep, 'partial_decision', ['choice' => 'cancel']);
+                    throw new RuntimeException('Cancelled — no changes made.');
+            }
         }
 
         // Phase 2: no existing job — fresh scan + new job.
@@ -209,6 +287,8 @@ class AnalyzeRunner
             'job_id' => $jobId,
             'tools_count' => $results['tools_count'],
             'cost_summary' => $results['cost_summary'],
+            'is_partial' => $results['is_partial'],
+            'partial_meta' => $results['partial_meta'],
         ]);
 
         $toolsPath = (string) $this->app['config']->get('mindum.tools_path');
@@ -238,6 +318,8 @@ class AnalyzeRunner
             costSummary: $results['cost_summary'],
             attached: $attached,
             writeReport: $writeReport,
+            isPartial: $results['is_partial'],
+            partialMeta: $results['partial_meta'],
         );
     }
 

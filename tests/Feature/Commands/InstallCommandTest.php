@@ -182,6 +182,203 @@ class InstallCommandTest extends TestCase
             ->assertExitCode(1);
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // Phase P3 / P5 — Failed-with-partial decision flow
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_partial_failed_job_user_chooses_download(): void
+    {
+        // /current returns failed-with-partial → user picks [1] Download.
+        // SDK fetches partial results (is_partial=true) and writes them.
+        Http::fake($this->routedResponder([
+            'current_then' => [
+                'status' => 'failed',
+                'job_id' => '01PART',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'tools_generated' => 1,
+                'error_message' => 'Anthropic billing cap',
+            ],
+            'results' => [
+                'job_id' => '01PART',
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['partial_tool']),
+                'is_partial' => true,
+                'partial_meta' => [
+                    'batches_completed' => 1,
+                    'total_batches' => 3,
+                    'batches_remaining' => 2,
+                    'error_message' => 'Anthropic billing cap',
+                    'resumable' => true,
+                ],
+                'cost_summary' => ['input_tokens' => 12000, 'output_tokens' => 3000, 'approximate_usd' => 0.08],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Detected failed scan job')
+            ->expectsChoice('Choice', '1', ['1', '2', '3', '4'])
+            ->expectsOutputToContain('Install complete (partial).')
+            ->expectsOutputToContain('this is a partial tool set')
+            ->expectsOutputToContain('Resume')
+            ->assertExitCode(0);
+
+        $this->assertFileExists($this->toolsPath.'/PartialTool.php');
+
+        // No /resume POST and no fresh /api/analyze POST.
+        Http::assertNotSent(fn (HttpRequest $r) => str_contains($r->url(), '/resume'));
+        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), '/api/analyze'));
+    }
+
+    public function test_partial_failed_job_user_chooses_resume(): void
+    {
+        // User picks [2] Resume → SDK POSTs /resume, polls until complete,
+        // then downloads the full set.
+        Http::fake($this->routedResponder([
+            'current_then' => [
+                'status' => 'failed',
+                'job_id' => '01RESUME',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'tools_generated' => 1,
+                'error_message' => 'Anthropic billing cap',
+            ],
+            'resume_returns' => [
+                'job_id' => '01RESUME',
+                'status' => 'queued',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'batches_remaining' => 2,
+                'message' => 'Job resumed.',
+            ],
+            'poll_sequence' => [
+                ['status' => 'running', 'batches_completed' => 2, 'total_batches' => 3],
+                ['status' => 'completed', 'batches_completed' => 3, 'total_batches' => 3, 'tools_generated' => 3],
+            ],
+            'results' => [
+                'tools_count' => 3,
+                'tools' => $this->fakeTools(['t1', 't2', 't3']),
+                'cost_summary' => ['input_tokens' => 36000, 'output_tokens' => 9000, 'approximate_usd' => 0.24],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Detected failed scan job')
+            ->expectsChoice('Choice', '2', ['1', '2', '3', '4'])
+            ->expectsOutputToContain('Resuming job')
+            ->expectsOutputToContain('Install complete.')
+            ->doesntExpectOutputToContain('Install complete (partial)')
+            ->assertExitCode(0);
+
+        // /resume was POSTed.
+        Http::assertSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/api/analyze/jobs/01RESUME/resume'));
+        // No fresh /api/analyze POST.
+        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), '/api/analyze'));
+    }
+
+    public function test_partial_failed_job_user_chooses_fresh(): void
+    {
+        // User picks [3] Fresh → SDK skips the partial entirely and starts
+        // a brand-new scan + POST /api/analyze.
+        Http::fake($this->routedResponder([
+            'current_then' => [
+                'status' => 'failed',
+                'job_id' => '01OLD',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'tools_generated' => 1,
+                'error_message' => 'Anthropic billing cap',
+            ],
+            'post_returns' => ['job_id' => '01NEW', 'status' => 'queued', 'total_batches' => 1, 'estimated_seconds' => 83],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['fresh_tool']),
+                'cost_summary' => ['input_tokens' => 1000, 'output_tokens' => 300, 'approximate_usd' => 0.01],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Detected failed scan job')
+            ->expectsChoice('Choice', '3', ['1', '2', '3', '4'])
+            ->expectsOutputToContain('Job accepted')
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+
+        // Fresh POST happened.
+        Http::assertSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), '/api/analyze'));
+        // No /resume.
+        Http::assertNotSent(fn (HttpRequest $r) => str_contains($r->url(), '/resume'));
+    }
+
+    public function test_partial_failed_job_user_chooses_cancel(): void
+    {
+        Http::fake($this->routedResponder([
+            'current_then' => [
+                'status' => 'failed',
+                'job_id' => '01CANCEL',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'tools_generated' => 1,
+                'error_message' => 'Anthropic billing cap',
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Detected failed scan job')
+            ->expectsChoice('Choice', '4', ['1', '2', '3', '4'])
+            ->expectsOutputToContain('Cancelled')
+            ->assertExitCode(1);
+
+        // No POSTs of any kind.
+        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST');
+    }
+
+    public function test_partial_failed_job_non_interactive_defaults_to_download(): void
+    {
+        // Per D-P-7: in --no-interaction mode, silently choose Download.
+        // Never auto-resume — that would surprise the customer with Anthropic spend.
+        Http::fake($this->routedResponder([
+            'current_then' => [
+                'status' => 'failed',
+                'job_id' => '01CI',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'tools_generated' => 1,
+                'error_message' => 'Anthropic billing cap',
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['ci_tool']),
+                'is_partial' => true,
+                'partial_meta' => [
+                    'batches_completed' => 1,
+                    'total_batches' => 3,
+                    'batches_remaining' => 2,
+                    'error_message' => 'Anthropic billing cap',
+                    'resumable' => true,
+                ],
+                'cost_summary' => ['input_tokens' => 12000, 'output_tokens' => 3000, 'approximate_usd' => 0.08],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true, '--no-interaction' => true])
+            ->expectsOutputToContain('Non-interactive mode')
+            ->expectsOutputToContain('Install complete (partial).')
+            ->assertExitCode(0);
+
+        $this->assertFileExists($this->toolsPath.'/CiTool.php');
+
+        // No /resume.
+        Http::assertNotSent(fn (HttpRequest $r) => str_contains($r->url(), '/resume'));
+    }
+
     /**
      * Build a fake responder closure that routes by URL + method to the
      * right canned response. Each scenario is configured via an array.
@@ -227,6 +424,18 @@ class InstallCommandTest extends TestCase
                 $pollIndex++;
 
                 return Http::response($this->mergePollDefaults($next), 200);
+            }
+
+            // POST /api/analyze/jobs/{id}/resume — Phase P5
+            if ($method === 'POST' && str_contains($url, '/resume')) {
+                return Http::response(array_merge([
+                    'job_id' => '01RESUME',
+                    'status' => 'queued',
+                    'batches_completed' => 1,
+                    'total_batches' => 3,
+                    'batches_remaining' => 2,
+                    'message' => 'Job resumed.',
+                ], $scenario['resume_returns'] ?? []), 202);
             }
 
             // POST /api/analyze

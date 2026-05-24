@@ -49,7 +49,10 @@ class InstallCommand extends Command
         }
 
         try {
-            $result = $runner->run($this->stepListener());
+            $result = $runner->run(
+                onStep: $this->stepListener(),
+                onPartialDecision: $this->partialDecisionPrompt(),
+            );
         } catch (RuntimeException $e) {
             $this->newLine();
             $this->error($e->getMessage());
@@ -63,6 +66,7 @@ class InstallCommand extends Command
         }
 
         $this->renderSummary($result);
+        $this->renderPartialFollowUp($result);
         $this->renderNextSteps();
 
         return self::SUCCESS;
@@ -108,6 +112,17 @@ class InstallCommand extends Command
                     $data['batches_completed'],
                     $data['total_batches'],
                 )),
+                // Phase P3 / Feature A: failed job with partial progress.
+                // The 4-option prompt is rendered by partialDecisionPrompt();
+                // this event just lets the user know what we found before
+                // the prompt appears.
+                'attach_failed_with_partial' => $this->renderAttachFailedWithPartial($data),
+                'partial_decision' => null, // The prompt itself echoes the choice.
+                'resume_started' => $this->line(sprintf(
+                    '<fg=cyan>↺</> Resuming job — %d batch%s remaining',
+                    $data['batches_remaining'],
+                    $data['batches_remaining'] === 1 ? '' : 'es',
+                )),
                 'scan_start' => $this->line('<fg=gray>•</> Scanning codebase...'),
                 'scan_complete' => $this->line(sprintf(
                     '<fg=green>✓</> Found <options=bold>%d</> candidate%s (%d skipped, %d parse errors)',
@@ -129,6 +144,82 @@ class InstallCommand extends Command
                     $data['deleted'] > 0 ? sprintf(' (deleted %d orphan%s)', $data['deleted'], $data['deleted'] === 1 ? '' : 's') : '',
                 )),
                 default => null,
+            };
+        };
+    }
+
+    /**
+     * Render the "we found a failed-with-partial job" banner shown before
+     * the 4-option prompt. Per Docs/Partial_Resume_Plan.md Phase P3 / D-P-7.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function renderAttachFailedWithPartial(array $data): void
+    {
+        $this->newLine();
+        $this->line(sprintf(
+            '<fg=yellow>✗</> Detected failed scan job <fg=gray>(%s)</> — <options=bold>%d/%d batches</> completed before failure',
+            substr($data['job_id'], 0, 12).'…',
+            $data['batches_completed'],
+            $data['total_batches'],
+        ));
+
+        if (! empty($data['error_message'])) {
+            $this->line('  <fg=gray>Error:</> '.$data['error_message']);
+        }
+        $this->newLine();
+    }
+
+    /**
+     * Build the partial-decision callback. Returns one of:
+     *   - 'download' — consume the partial set as-is, no further Anthropic spend
+     *   - 'resume'   — re-dispatch the worker to complete remaining batches
+     *   - 'fresh'    — discard and start a brand new scan from batch 0
+     *   - 'cancel'   — abort the install
+     *
+     * Non-interactive mode (CI, `--no-interaction`) returns 'download' silently
+     * per D-P-7 — never an automatic resume that would surprise the user with
+     * Anthropic spend.
+     */
+    private function partialDecisionPrompt(): callable
+    {
+        return function (array $partialJob): string {
+            // Non-interactive runs (CI, --no-interaction, scripts) default
+            // to download. Resume must be explicitly opted into.
+            if (! $this->input->isInteractive() || $this->option('no-interaction')) {
+                $this->line('<fg=gray>•</> Non-interactive mode: downloading partial set.');
+
+                return 'download';
+            }
+
+            $remaining = (int) $partialJob['total_batches'] - (int) $partialJob['batches_completed'];
+            $generated = (int) ($partialJob['tools_generated'] ?? 0);
+
+            $this->line('  What would you like to do?');
+            $this->newLine();
+            $this->line(sprintf(
+                '    <fg=cyan>[1]</> Download partial tools — <options=bold>%d batch%s</> worth (~%d tools), no Anthropic cost  <fg=gray>[recommended]</>',
+                $partialJob['batches_completed'],
+                $partialJob['batches_completed'] === 1 ? '' : 'es',
+                $generated,
+            ));
+            $this->line(sprintf(
+                '    <fg=cyan>[2]</> Resume the scan — process remaining <options=bold>%d batch%s</>',
+                $remaining,
+                $remaining === 1 ? '' : 'es',
+            ));
+            $this->line('    <fg=cyan>[3]</> Start fresh — discard partial, scan from scratch');
+            $this->line('    <fg=cyan>[4]</> Cancel');
+            $this->newLine();
+
+            $choice = (string) $this->choice('Choice', ['1', '2', '3', '4'], '1');
+
+            return match ($choice) {
+                '1' => 'download',
+                '2' => 'resume',
+                '3' => 'fresh',
+                '4' => 'cancel',
+                default => 'download',
             };
         };
     }
@@ -209,7 +300,11 @@ class InstallCommand extends Command
     private function renderSummary(AnalyzeResult $result): void
     {
         $this->newLine();
-        $this->line('<fg=green;options=bold>Install complete.</>');
+        if ($result->wasPartialDownload()) {
+            $this->line('<fg=yellow;options=bold>Install complete (partial).</>');
+        } else {
+            $this->line('<fg=green;options=bold>Install complete.</>');
+        }
         $this->newLine();
 
         $rows = [
@@ -224,6 +319,13 @@ class InstallCommand extends Command
             $rows[] = ['Attached to existing job', 'yes'];
         }
 
+        if ($result->wasPartialDownload() && $result->partialMeta !== null) {
+            $meta = $result->partialMeta;
+            $rows[] = ['Partial run', sprintf('%d / %d batches', $meta['batches_completed'], $meta['total_batches'])];
+            $rows[] = ['Batches remaining', (string) $meta['batches_remaining']];
+            $rows[] = ['Resumable', $meta['resumable'] ? 'yes (within 30 days)' : 'no (window expired)'];
+        }
+
         $this->table(['', ''], $rows);
     }
 
@@ -235,6 +337,39 @@ class InstallCommand extends Command
         $this->line('  2. Register the MCP route. In <fg=cyan>routes/ai.php</> or <fg=cyan>routes/web.php</>:');
         $this->line('     <fg=gray>Mcp::local(\'mindum\', config(\'mindum.tools_namespace\'))->path(config(\'mindum.mcp_endpoint\'));</>');
         $this->line('  3. Run <fg=cyan>php artisan mindum:status</> to verify.');
+        $this->newLine();
+    }
+
+    /**
+     * Print the "this is a partial set — you can resume later" note after a
+     * partial install. Called from handle() only when the result indicates
+     * a partial download.
+     */
+    private function renderPartialFollowUp(AnalyzeResult $result): void
+    {
+        if (! $result->wasPartialDownload() || $result->partialMeta === null) {
+            return;
+        }
+
+        $meta = $result->partialMeta;
+
+        $this->newLine();
+        $this->line('<fg=yellow;options=bold>Note: this is a partial tool set.</>');
+        $this->line(sprintf(
+            '  <fg=gray>%d of %d batches completed before the scan failed.</>',
+            $meta['batches_completed'],
+            $meta['total_batches'],
+        ));
+
+        if (! empty($meta['error_message'])) {
+            $this->line('  <fg=gray>Error:</> '.$meta['error_message']);
+        }
+
+        if ($meta['resumable']) {
+            $this->line('  <fg=gray>To process the remaining '.$meta['batches_remaining'].' batches later, re-run <fg=cyan>php artisan mindum:install</> and choose "Resume" at the prompt.</>');
+        } else {
+            $this->line('  <fg=gray>The 30-day resume window has expired. To complete the tool set, re-run <fg=cyan>php artisan mindum:install</> and choose "Start fresh".</>');
+        }
         $this->newLine();
     }
 }

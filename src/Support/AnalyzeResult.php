@@ -21,6 +21,15 @@ final class AnalyzeResult
      *     output_tokens: int,
      *     approximate_usd: float
      * }  $costSummary
+     * @param  array{
+     *     batches_completed: int,
+     *     total_batches: int,
+     *     batches_remaining: int,
+     *     error_message: ?string,
+     *     resumable: bool
+     * }|null  $partialMeta  Set when the user chose to download a partial set
+     *                       (per Docs/Partial_Resume_Plan.md Phase P3). Null
+     *                       otherwise — happy paths produce complete tool sets.
      */
     public function __construct(
         public readonly int $entryCount,
@@ -31,6 +40,8 @@ final class AnalyzeResult
         public readonly array $costSummary,
         public readonly bool $attached,
         public readonly WriteReport $writeReport,
+        public readonly bool $isPartial = false,
+        public readonly ?array $partialMeta = null,
     ) {}
 
     /**
@@ -40,5 +51,15 @@ final class AnalyzeResult
     public function wasAttached(): bool
     {
         return $this->attached;
+    }
+
+    /**
+     * True when this run consumed a failed-with-partial job (Feature A).
+     * The CLI uses this to render a "you downloaded a partial set" notice
+     * and prompt the user about whether they want to resume later.
+     */
+    public function wasPartialDownload(): bool
+    {
+        return $this->isPartial;
     }
 }

@@ -161,6 +161,7 @@ class MindumApiClientTest extends TestCase
                     ['name' => 'list_posts'],
                     ['name' => 'create_post'],
                 ],
+                'is_partial' => false,
                 'cost_summary' => [
                     'input_tokens' => 26000,
                     'output_tokens' => 7800,
@@ -176,6 +177,45 @@ class MindumApiClientTest extends TestCase
         $this->assertSame('list_posts', $result['tools'][0]['name']);
         $this->assertSame(26000, $result['cost_summary']['input_tokens']);
         $this->assertSame(0.2, $result['cost_summary']['approximate_usd']);
+        $this->assertFalse($result['is_partial']);
+        $this->assertNull($result['partial_meta']);
+    }
+
+    public function test_fetch_results_propagates_partial_meta_when_failed_with_batches(): void
+    {
+        // Per Docs/Partial_Resume_Plan.md P3: API returns is_partial + meta
+        // when serving a failed-with-batches job. SDK exposes the same shape
+        // so the runner can drive the UX accordingly.
+        Http::fake([
+            'api.mindum.ai/api/analyze/jobs/01HXY/results' => Http::response([
+                'job_id' => '01HXY',
+                'tools_count' => 1,
+                'tools' => [['name' => 'list_posts']],
+                'is_partial' => true,
+                'partial_meta' => [
+                    'batches_completed' => 1,
+                    'total_batches' => 3,
+                    'batches_remaining' => 2,
+                    'error_message' => 'Anthropic billing cap',
+                    'resumable' => true,
+                ],
+                'cost_summary' => [
+                    'input_tokens' => 12000,
+                    'output_tokens' => 3000,
+                    'approximate_usd' => 0.08,
+                ],
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->fetchResults('01HXY');
+
+        $this->assertTrue($result['is_partial']);
+        $this->assertNotNull($result['partial_meta']);
+        $this->assertSame(1, $result['partial_meta']['batches_completed']);
+        $this->assertSame(3, $result['partial_meta']['total_batches']);
+        $this->assertSame(2, $result['partial_meta']['batches_remaining']);
+        $this->assertSame('Anthropic billing cap', $result['partial_meta']['error_message']);
+        $this->assertTrue($result['partial_meta']['resumable']);
     }
 
     public function test_fetch_results_throws_on_409_job_not_completed(): void
@@ -253,6 +293,66 @@ class MindumApiClientTest extends TestCase
         $this->expectExceptionMessage('HTTP 500');
 
         (new MindumApiClient)->currentJob();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // resumeJob — Phase P5 / Feature B
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_resume_job_posts_and_returns_requeued_state(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/analyze/jobs/01HXY/resume' => Http::response([
+                'job_id' => '01HXY',
+                'status' => 'queued',
+                'batches_completed' => 1,
+                'total_batches' => 3,
+                'batches_remaining' => 2,
+                'message' => 'Job resumed.',
+            ], 202),
+        ]);
+
+        $result = (new MindumApiClient)->resumeJob('01HXY');
+
+        $this->assertSame('01HXY', $result['job_id']);
+        $this->assertSame('queued', $result['status']);
+        $this->assertSame(1, $result['batches_completed']);
+        $this->assertSame(2, $result['batches_remaining']);
+
+        Http::assertSent(function ($request) {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/api/analyze/jobs/01HXY/resume')
+                && $request->hasHeader('Authorization', 'Bearer mk_test_abc123');
+        });
+    }
+
+    public function test_resume_job_throws_on_409_non_resumable(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response([
+                'error' => 'job_not_resumable',
+                'status' => 'completed',
+            ], 409),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 409');
+
+        (new MindumApiClient)->resumeJob('01HXY');
+    }
+
+    public function test_resume_job_throws_on_410_expired(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response([
+                'error' => 'resume_window_expired',
+            ], 410),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 410');
+
+        (new MindumApiClient)->resumeJob('01HXY');
     }
 
     // ────────────────────────────────────────────────────────────────────
