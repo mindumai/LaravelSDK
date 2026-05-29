@@ -81,7 +81,7 @@ declare(strict_types=1);
 
 namespace {$namespace};
 
-use Laravel\\Mcp\\Server\\Tools\\ToolInputSchema;
+use Illuminate\\Contracts\\JsonSchema\\JsonSchema;
 use Mindum\\Laravel\\Tools\\GeneratedTool;
 
 class {$className} extends GeneratedTool
@@ -96,10 +96,11 @@ class {$className} extends GeneratedTool
         return {$descriptionLiteral};
     }
 
-    public function schema(ToolInputSchema \$schema): ToolInputSchema
+    public function schema(JsonSchema \$schema): array
     {
+        return [
 {$schemaBody}
-        return \$schema;
+        ];
     }
 
     /**
@@ -137,8 +138,10 @@ PHP;
     }
 
     /**
-     * Render the body of schema() using ToolInputSchema::raw() per property.
-     * Required fields call ->required() to register with the schema.
+     * Render the body of schema() as a map of property-name => JsonSchema
+     * builder chain, per laravel/mcp's `schema(JsonSchema $schema): array`
+     * API (0.5+/0.7). The lines are emitted at 12-space indent to sit inside
+     * the generated `return [ ... ];`.
      *
      * @param  array<string, mixed>  $inputSchema
      */
@@ -148,25 +151,57 @@ PHP;
         $required = is_array($inputSchema['required'] ?? null) ? $inputSchema['required'] : [];
 
         if ($properties === []) {
-            return '        // No input fields.';
+            return '            // No input fields.';
         }
 
         $lines = [];
         foreach ($properties as $name => $schema) {
             $name = (string) $name;
-            $schemaExport = $this->exportArrayInline(is_array($schema) ? $schema : []);
-            $isRequired = in_array($name, $required, true);
-
-            $nameLiteral = $this->phpStringLiteral($name);
-            $call = "        \$schema->raw({$nameLiteral}, {$schemaExport})";
-            if ($isRequired) {
-                $call .= '->required()';
-            }
-            $call .= ';';
-            $lines[] = $call;
+            $builder = $this->renderPropertyBuilder(is_array($schema) ? $schema : [], in_array($name, $required, true));
+            $lines[] = '            '.$this->phpStringLiteral($name).' => '.$builder.',';
         }
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * Render one property's JsonSchema builder chain from its JSON Schema
+     * definition. Maps scalar/array types to the typed builder; anything
+     * exotic (object/nested/multi-type/missing) falls back to string() so the
+     * tool always loads. Modifiers (description/enum/default/required) are
+     * appended only when present.
+     *
+     * @param  array<string, mixed>  $schema
+     */
+    private function renderPropertyBuilder(array $schema, bool $required): string
+    {
+        $type = is_string($schema['type'] ?? null) ? $schema['type'] : '';
+
+        $call = match ($type) {
+            'integer' => '$schema->integer()',
+            'number' => '$schema->number()',
+            'boolean' => '$schema->boolean()',
+            'array' => '$schema->array()',
+            default => '$schema->string()',
+        };
+
+        if (isset($schema['description']) && is_string($schema['description']) && $schema['description'] !== '') {
+            $call .= '->description('.$this->phpStringLiteral($schema['description']).')';
+        }
+
+        if (isset($schema['enum']) && is_array($schema['enum']) && $schema['enum'] !== []) {
+            $call .= '->enum('.$this->exportArrayInline(array_values($schema['enum'])).')';
+        }
+
+        if (array_key_exists('default', $schema) && is_scalar($schema['default'])) {
+            $call .= '->default('.var_export($schema['default'], true).')';
+        }
+
+        if ($required) {
+            $call .= '->required()';
+        }
+
+        return $call;
     }
 
     /**
