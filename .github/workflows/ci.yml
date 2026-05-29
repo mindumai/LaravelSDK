@@ -40,6 +40,14 @@ jobs:
       matrix:
         php: ['8.2', '8.3', '8.4', '8.5']
         laravel: ['12.*', '13.*']
+        include:
+          # Laravel 10 support (resolves laravel/mcp to the 0.5.x line).
+          # L10 tops out at PHP 8.3, so pin a known-good combo via include
+          # rather than widening the cross-product into invalid pairs.
+          - php: '8.3'
+            laravel: '10.*'
+          - php: '8.2'
+            laravel: '11.*'
     steps:
       - uses: actions/checkout@v4
 
