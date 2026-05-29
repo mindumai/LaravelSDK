@@ -337,6 +337,42 @@ class MindumApiClient
     }
 
     /**
+     * POST /api/mcp/register
+     *
+     * Auto-provisions (or re-syncs) this app's MCP credentials with the
+     * orchestrator. Sends the app's publicly reachable MCP endpoint URL;
+     * the server stores it and returns the shared secret the chat backend
+     * sends in the X-Mindum-Secret header on every tool call.
+     *
+     * The secret is generated server-side on first registration and returned
+     * verbatim thereafter (idempotent), so re-running mindum:install keeps the
+     * customer's .env in sync without rotating a live secret out from under
+     * existing widgets.
+     *
+     * @return array{mcp_endpoint: string, mcp_secret: string, rotated: bool}
+     *
+     * @throws RuntimeException when the response omits the secret, on auth
+     *                          failure, or on network errors.
+     */
+    public function registerMcp(string $endpointUrl): array
+    {
+        $response = $this->request('POST', '/api/mcp/register', [
+            'mcp_endpoint' => $endpointUrl,
+        ]);
+
+        $secret = (string) ($response['mcp_secret'] ?? '');
+        if ($secret === '') {
+            throw new RuntimeException('Mindum API /mcp/register response missing "mcp_secret".');
+        }
+
+        return [
+            'mcp_endpoint' => (string) ($response['mcp_endpoint'] ?? $endpointUrl),
+            'mcp_secret' => $secret,
+            'rotated' => (bool) ($response['rotated'] ?? false),
+        ];
+    }
+
+    /**
      * GET /api/analyze/jobs/current
      *
      * Returns the latest in-flight or undownloaded-complete job for the

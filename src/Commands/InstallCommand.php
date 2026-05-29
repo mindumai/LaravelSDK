@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mindum\Laravel\Commands;
 
 use Illuminate\Console\Command;
+use Mindum\Laravel\Api\MindumApiClient;
 use Mindum\Laravel\Support\AnalyzeResult;
 use Mindum\Laravel\Support\AnalyzeRunner;
 use RuntimeException;
@@ -31,7 +32,7 @@ class InstallCommand extends Command
     /** Width of the in-place progress line; padding spaces overwrite stale text. */
     private const PROGRESS_LINE_WIDTH = 80;
 
-    public function handle(AnalyzeRunner $runner): int
+    public function handle(AnalyzeRunner $runner, MindumApiClient $api): int
     {
         $this->line('');
         $this->line('<fg=cyan;options=bold>Mindum install</>');
@@ -69,9 +70,76 @@ class InstallCommand extends Command
 
         $this->renderSummary($result);
         $this->renderPartialFollowUp($result);
+        $this->provisionMcpSecret($api);
         $this->renderNextSteps();
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Auto-provision the MCP shared secret (mirrors the E2 API-key flow).
+     *
+     * Builds this app's publicly reachable MCP endpoint URL from APP_URL +
+     * the configured mcp_endpoint path, registers it with the orchestrator,
+     * and persists the returned secret to .env as MINDUM_MCP_SECRET. The
+     * orchestrator generates the secret once and returns the same one on
+     * subsequent installs, so this keeps the customer's .env in sync with the
+     * server without rotating a live secret.
+     *
+     * Never aborts the install: a network blip or unwritable .env degrades to
+     * a printed instruction rather than undoing a successful scan. The tools
+     * are already on disk by the time we get here.
+     */
+    private function provisionMcpSecret(MindumApiClient $api): void
+    {
+        $appUrl = rtrim((string) config('app.url', ''), '/');
+        $mcpPath = '/'.ltrim((string) config('mindum.mcp_endpoint', '/mindum/mcp'), '/');
+
+        $this->newLine();
+        $this->line('<fg=cyan;options=bold>MCP credentials</>');
+
+        if ($appUrl === '') {
+            $this->warn('  APP_URL is not set — can\'t determine your public MCP endpoint.');
+            $this->line('  <fg=gray>Set APP_URL in your .env and re-run, or configure the secret in the dashboard.</>');
+
+            return;
+        }
+
+        $endpointUrl = $appUrl.$mcpPath;
+
+        try {
+            $registration = $api->registerMcp($endpointUrl);
+        } catch (Throwable $e) {
+            $this->warn('  Could not register MCP endpoint ('.$e->getMessage().').');
+            $this->line('  <fg=gray>Your tools are installed. Re-run <fg=cyan>php artisan mindum:install</> to retry, or set the secret in the dashboard.</>');
+
+            return;
+        }
+
+        $secret = $registration['mcp_secret'];
+
+        // Set runtime config so a follow-on mindum:status in the same process
+        // reports the secret as configured.
+        config()->set('mindum.mcp_secret', $secret);
+
+        try {
+            $envPath = $this->writeEnvVar('MINDUM_MCP_SECRET', $secret);
+            $this->line('<fg=green>✓</> Registered MCP endpoint <fg=gray>('.$endpointUrl.')</>');
+            $this->line('<fg=green>✓</> Saved <fg=cyan>MINDUM_MCP_SECRET</> to '.$envPath);
+        } catch (Throwable $e) {
+            $this->warn('  Registered the endpoint, but couldn\'t write MINDUM_MCP_SECRET to .env ('.$e->getMessage().').');
+            $this->line('  <fg=gray>Add this line to your .env manually:</>');
+            $this->getOutput()->writeln('    MINDUM_MCP_SECRET='.$secret);
+        }
+
+        // The orchestrator calls back into this URL to run tools. A localhost /
+        // .test APP_URL won't be reachable from the chat backend — warn, but
+        // don't fail (the customer may just be scanning locally for now).
+        if (preg_match('#^https?://(localhost|127\.0\.0\.1|[^/]*\.test)(:|/|$)#i', $appUrl) === 1) {
+            $this->newLine();
+            $this->line('  <fg=yellow>Note:</> APP_URL ('.$appUrl.') is not publicly reachable.');
+            $this->line('  <fg=gray>The chat backend can\'t call your tools until APP_URL points at a public host.</>');
+        }
     }
 
     private function verifyConfig(): bool
@@ -174,6 +242,21 @@ class InstallCommand extends Command
      */
     private function writeApiKeyToEnv(string $apiKey): string
     {
+        return $this->writeEnvVar('MINDUM_API_KEY', $apiKey);
+    }
+
+    /**
+     * Persist a single KEY=value pair to the customer's .env file. Creates
+     * the file from .env.example (or empty) if it doesn't exist yet. Idempotent
+     * — replaces an existing KEY= line in place rather than duplicating, so
+     * re-running install never appends a second MINDUM_API_KEY / secret.
+     *
+     * Returns the absolute path of the .env file written. Used for both the
+     * E2 API-key flow and MCP-secret auto-provisioning, which share identical
+     * write semantics.
+     */
+    private function writeEnvVar(string $key, string $value): string
+    {
         $envPath = base_path('.env');
         $examplePath = base_path('.env.example');
 
@@ -183,7 +266,7 @@ class InstallCommand extends Command
                     throw new RuntimeException("Could not copy .env.example to .env at {$envPath}");
                 }
             } else {
-                if (file_put_contents($envPath, "") === false) {
+                if (file_put_contents($envPath, '') === false) {
                     throw new RuntimeException("Could not create .env at {$envPath}");
                 }
             }
@@ -194,12 +277,18 @@ class InstallCommand extends Command
             throw new RuntimeException("Could not read .env at {$envPath}");
         }
 
-        $line = "MINDUM_API_KEY={$apiKey}";
+        $line = "{$key}={$value}";
+        $pattern = '/^'.preg_quote($key, '/').'=.*$/m';
 
-        if (preg_match('/^MINDUM_API_KEY=.*$/m', $contents)) {
+        // Escape backreference/special sequences so a value containing $ or \
+        // is written literally by preg_replace (our values are hex today, but
+        // this keeps the shared helper safe for any future env var).
+        $replacement = str_replace(['\\', '$'], ['\\\\', '\\$'], $line);
+
+        if (preg_match($pattern, $contents) === 1) {
             // Replace existing line — preserves whatever comments / ordering
             // the customer's .env already has.
-            $contents = preg_replace('/^MINDUM_API_KEY=.*$/m', $line, $contents);
+            $contents = preg_replace($pattern, $replacement, $contents);
         } else {
             // Append. Make sure we don't double-newline if the file already
             // ends with one (typical) vs. doesn't (rare but possible).

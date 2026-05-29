@@ -68,7 +68,9 @@ class ToolClassRendererTest extends TestCase
         $this->assertStringContainsString('class CreatePost extends GeneratedTool', $output['source']);
         $this->assertStringContainsString('public function name(): string', $output['source']);
         $this->assertStringContainsString('public function description(): string', $output['source']);
-        $this->assertStringContainsString('public function schema(ToolInputSchema $schema): ToolInputSchema', $output['source']);
+        // laravel/mcp 0.5+/0.7 API: schema(JsonSchema $schema): array.
+        $this->assertStringContainsString('use Illuminate\\Contracts\\JsonSchema\\JsonSchema;', $output['source']);
+        $this->assertStringContainsString('public function schema(JsonSchema $schema): array', $output['source']);
         $this->assertStringContainsString('protected function execute(array $input): mixed', $output['source']);
     }
 
@@ -102,14 +104,17 @@ class ToolClassRendererTest extends TestCase
             ],
         ]));
 
-        $this->assertStringContainsString("\$schema->raw('title'", $output['source']);
-        $this->assertStringContainsString("\$schema->raw('body'", $output['source']);
-        $this->assertStringContainsString("\$schema->raw('tags'", $output['source']);
+        // New API emits a property-name => typed-builder map: each property is
+        // `'name' => $schema->TYPE()...`, with ->required() appended for the
+        // ones listed in `required`.
+        $this->assertStringContainsString("'title' => \$schema->string()", $output['source']);
+        $this->assertStringContainsString("'body' => \$schema->string()", $output['source']);
+        $this->assertStringContainsString("'tags' => \$schema->array()", $output['source']);
 
         // title and body must be required; tags must not.
-        $this->assertMatchesRegularExpression("/raw\('title'.+\)->required\(\)/", $output['source']);
-        $this->assertMatchesRegularExpression("/raw\('body'.+\)->required\(\)/", $output['source']);
-        $this->assertDoesNotMatchRegularExpression("/raw\('tags'.+\)->required\(\)/", $output['source']);
+        $this->assertMatchesRegularExpression("/'title' => \\\$schema->.+->required\(\)/", $output['source']);
+        $this->assertMatchesRegularExpression("/'body' => \\\$schema->.+->required\(\)/", $output['source']);
+        $this->assertDoesNotMatchRegularExpression("/'tags' => \\\$schema->.+->required\(\)/", $output['source']);
     }
 
     public function test_no_input_fields_produces_placeholder_comment(): void

@@ -239,6 +239,95 @@ class InstallCommandTest extends TestCase
         }
     }
 
+    public function test_install_auto_provisions_mcp_secret_to_env(): void
+    {
+        // MCP-secret auto-provisioning: after the scan, the install builds its
+        // public MCP endpoint URL (APP_URL + mcp_endpoint path), registers it
+        // with the orchestrator, and persists the returned secret to .env as
+        // MINDUM_MCP_SECRET — mirroring the E2 API-key flow. Uses a per-test
+        // temp app root so we can inspect .env without polluting the fixture.
+        $tempAppRoot = sys_get_temp_dir().DIRECTORY_SEPARATOR.'mindum_mcptest_'.bin2hex(random_bytes(6));
+        $this->files->makeDirectory($tempAppRoot, 0755, true);
+        $this->files->copyDirectory(
+            realpath(__DIR__.'/../../fixtures/laravel-app/app'),
+            $tempAppRoot.'/app',
+        );
+        file_put_contents($tempAppRoot.'/.env', "APP_NAME=Demo\nDB_CONNECTION=sqlite\n");
+
+        $this->app->setBasePath($tempAppRoot);
+        config()->set('app.url', 'https://demo.example.com');
+        config()->set('mindum.mcp_endpoint', '/mindum/mcp');
+        config()->set('mindum.api_key', 'mk_live_provision');
+        config()->set('mindum.tools_path', $this->toolsPath);
+        config()->set('mindum.scan_paths', ['app/']);
+
+        $secret = str_repeat('b', 64);
+
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01MCP', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['mcp_tool']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+            // Opt the responder into the /api/mcp/register success path.
+            'mcp_register_returns' => [
+                'mcp_endpoint' => 'https://demo.example.com/mindum/mcp',
+                'mcp_secret' => $secret,
+                'rotated' => true,
+            ],
+        ]));
+
+        try {
+            $this->artisan('mindum:install', ['--force' => true])
+                ->expectsOutputToContain('Registered MCP endpoint')
+                ->expectsOutputToContain('Saved')
+                ->assertExitCode(0);
+
+            $envContents = file_get_contents($tempAppRoot.'/.env');
+            $this->assertStringContainsString('MINDUM_MCP_SECRET='.$secret, $envContents);
+            // Existing lines preserved; secret written exactly once.
+            $this->assertStringContainsString('APP_NAME=Demo', $envContents);
+            $this->assertSame(1, substr_count($envContents, 'MINDUM_MCP_SECRET='));
+
+            // The registration POST carried the app's public MCP endpoint URL.
+            Http::assertSent(fn (HttpRequest $r) => $r->method() === 'POST'
+                && str_ends_with($r->url(), '/api/mcp/register')
+                && $r['mcp_endpoint'] === 'https://demo.example.com/mindum/mcp');
+        } finally {
+            $this->files->deleteDirectory($tempAppRoot);
+        }
+    }
+
+    public function test_install_survives_mcp_registration_failure(): void
+    {
+        // A failed MCP registration (or unwritable .env) must NOT fail the
+        // install — the tools are already on disk. The responder leaves the
+        // /api/mcp/register route unhandled (500), so provisionMcpSecret
+        // catches and degrades to a warning while the command still exits 0.
+        Http::fake($this->routedResponder([
+            'current_then' => 204,
+            'post_returns' => ['job_id' => '01DEGRADE', 'status' => 'queued', 'total_batches' => 1],
+            'poll_sequence' => [
+                ['status' => 'completed', 'batches_completed' => 1, 'total_batches' => 1, 'tools_generated' => 1],
+            ],
+            'results' => [
+                'tools_count' => 1,
+                'tools' => $this->fakeTools(['degrade_tool']),
+                'cost_summary' => ['input_tokens' => 100, 'output_tokens' => 50, 'approximate_usd' => 0.001],
+            ],
+        ]));
+
+        $this->artisan('mindum:install', ['--force' => true])
+            ->expectsOutputToContain('Could not register MCP endpoint')
+            ->expectsOutputToContain('Install complete.')
+            ->assertExitCode(0);
+    }
+
     public function test_install_fresh_scan_happy_path(): void
     {
         // No existing job → 204 on /current; POST returns 202 with a job_id;
@@ -316,8 +405,11 @@ class InstallCommandTest extends TestCase
             ->expectsOutputToContain('Install complete.')
             ->assertExitCode(0);
 
-        // No POST and no polling.
-        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST');
+        // No scan POST and no polling. (The /api/mcp/register provisioning
+        // POST from provisionMcpSecret IS expected on every successful install,
+        // so scope this to /api/analyze rather than asserting zero POSTs.)
+        Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/api/analyze'));
         Http::assertNotSent(fn (HttpRequest $r) => $r->method() === 'GET'
             && str_contains($r->url(), '/jobs/01DONE')
             && ! str_contains($r->url(), '/results'));
@@ -1050,6 +1142,24 @@ class InstallCommandTest extends TestCase
                     'batches_remaining' => 2,
                     'message' => 'Job resumed.',
                 ], $scenario['resume_returns'] ?? []), 202);
+            }
+
+            // POST /api/mcp/register — MCP-secret auto-provisioning. Only
+            // responds with success when the scenario opts in via
+            // mcp_register_returns; otherwise falls through to the 500
+            // unhandled-route below so provisionMcpSecret degrades gracefully
+            // (no .env write) and the shared fixture .env stays clean for the
+            // bulk of install tests that don't exercise this path.
+            if ($method === 'POST' && str_ends_with($url, '/api/mcp/register')) {
+                if (! isset($scenario['mcp_register_returns'])) {
+                    return Http::response(['error' => 'unhandled_route', 'url' => $url], 500);
+                }
+
+                return Http::response(array_merge([
+                    'mcp_endpoint' => 'https://example.test/mindum/mcp',
+                    'mcp_secret' => str_repeat('a', 64),
+                    'rotated' => true,
+                ], $scenario['mcp_register_returns']), 200);
             }
 
             // POST /api/analyze

@@ -558,6 +558,61 @@ class MindumApiClientTest extends TestCase
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // registerMcp — MCP-secret auto-provisioning
+    // ────────────────────────────────────────────────────────────────────
+
+    public function test_register_mcp_posts_endpoint_and_returns_secret(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/mcp/register' => Http::response([
+                'mcp_endpoint' => 'https://app.example.com/mindum/mcp',
+                'mcp_secret' => str_repeat('a', 64),
+                'rotated' => true,
+            ], 200),
+        ]);
+
+        $result = (new MindumApiClient)->registerMcp('https://app.example.com/mindum/mcp');
+
+        $this->assertSame('https://app.example.com/mindum/mcp', $result['mcp_endpoint']);
+        $this->assertSame(str_repeat('a', 64), $result['mcp_secret']);
+        $this->assertTrue($result['rotated']);
+
+        Http::assertSent(function ($request) {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), 'api.mindum.ai/api/mcp/register')
+                && $request->hasHeader('Authorization', 'Bearer mk_test_abc123')
+                && $request['mcp_endpoint'] === 'https://app.example.com/mindum/mcp';
+        });
+    }
+
+    public function test_register_mcp_throws_when_secret_missing(): void
+    {
+        Http::fake([
+            'api.mindum.ai/api/mcp/register' => Http::response([
+                'mcp_endpoint' => 'https://app.example.com/mindum/mcp',
+                // No mcp_secret — server contract violation.
+            ], 200),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('missing "mcp_secret"');
+
+        (new MindumApiClient)->registerMcp('https://app.example.com/mindum/mcp');
+    }
+
+    public function test_register_mcp_throws_on_http_error(): void
+    {
+        Http::fake([
+            'api.mindum.ai/*' => Http::response(['error' => 'invalid_api_key'], 401),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 401');
+
+        (new MindumApiClient)->registerMcp('https://app.example.com/mindum/mcp');
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // Custom api_url
     // ────────────────────────────────────────────────────────────────────
 
