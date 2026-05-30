@@ -7,7 +7,7 @@ namespace Mindum\Laravel;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
-use Laravel\Mcp\Server\Transport\HttpTransport;
+use Laravel\Mcp\Facades\Mcp;
 use Mindum\Laravel\Commands\ChatCommand;
 use Mindum\Laravel\Commands\InstallCommand;
 use Mindum\Laravel\Commands\RescanCommand;
@@ -83,13 +83,12 @@ class MindumServiceProvider extends ServiceProvider
             return;
         }
 
-        Route::post($endpoint, function () {
-            $transport = new HttpTransport(request());
-            $server = new MindumMcpServer;
-            $server->connect($transport);
-
-            return $transport->run();
-        })
+        // laravel/mcp 0.5+ — Mcp::web() registers the spec-required GET (405)
+        // plus the POST route and builds the HttpTransport (request, session-id)
+        // internally, replacing the hand-rolled transport wiring that broke when
+        // HttpTransport's constructor gained required arguments. We layer the
+        // shared-secret guard on top and name the POST route for route:list.
+        Mcp::web($endpoint, MindumMcpServer::class)
             ->middleware(VerifyMcpSecret::class)
             ->name('mindum.mcp');
     }

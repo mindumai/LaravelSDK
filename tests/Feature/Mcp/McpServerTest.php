@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mindum\Laravel\Tests\Feature\Mcp;
 
+use Laravel\Mcp\Server\McpServiceProvider;
 use Mindum\Laravel\Http\Middleware\VerifyMcpSecret;
 use Mindum\Laravel\MindumServiceProvider;
 use Orchestra\Testbench\TestCase;
@@ -25,7 +26,11 @@ class McpServerTest extends TestCase
 
     protected function getPackageProviders($app): array
     {
-        return [MindumServiceProvider::class];
+        // laravel/mcp's provider binds the Registrar (for Mcp::web) and the
+        // resolving hook that populates the injected Request — both required
+        // for the 0.5+ HTTP server to work. Testbench doesn't auto-discover,
+        // so it must be listed explicitly alongside ours.
+        return [McpServiceProvider::class, MindumServiceProvider::class];
     }
 
     protected function defineEnvironment($app): void
@@ -117,7 +122,7 @@ class McpServerTest extends TestCase
         $this->assertSame(['sum' => 42], $decoded);
     }
 
-    public function test_tools_call_for_unknown_tool_returns_error_result(): void
+    public function test_tools_call_for_unknown_tool_returns_jsonrpc_error(): void
     {
         $response = $this->postJson(self::ENDPOINT, [
             'jsonrpc' => '2.0',
@@ -129,9 +134,12 @@ class McpServerTest extends TestCase
             'id' => 11,
         ], [VerifyMcpSecret::HEADER => self::SECRET]);
 
+        // laravel/mcp 0.5+ reports an unknown tool as a JSON-RPC error
+        // (-32602, invalid params) at HTTP 200, not an isError tool result.
         $response->assertOk();
-        $this->assertTrue($response->json('result.isError'));
-        $this->assertSame('Tool not found', $response->json('result.content.0.text'));
+        $this->assertSame(11, $response->json('id'));
+        $this->assertSame(-32602, $response->json('error.code'));
+        $this->assertStringContainsString('not found', $response->json('error.message'));
     }
 
     public function test_missing_secret_header_returns_401(): void

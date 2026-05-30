@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 namespace Mindum\Laravel\Tests\Stubs\Mcp\Tools;
 
-use Laravel\Mcp\Server\Tools\ToolInputSchema;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Mindum\Laravel\Tools\GeneratedTool;
 
 class EchoTool extends GeneratedTool
@@ -25,11 +25,14 @@ class EchoTool extends GeneratedTool
         return 'Echoes the `message` input back, prefixed with "echo: ".';
     }
 
-    public function schema(ToolInputSchema $schema): ToolInputSchema
+    /**
+     * @return array<string, JsonSchema>
+     */
+    public function schema(JsonSchema $schema): array
     {
-        $schema->raw('message', ['type' => 'string', 'description' => 'Text to echo.'])->required();
-
-        return $schema;
+        return [
+            'message' => $schema->string()->description('Text to echo.')->required(),
+        ];
     }
 
     /**

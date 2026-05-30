@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace Mindum\Laravel\Tools;
 
 use Illuminate\Contracts\Support\Arrayable;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
 use Laravel\Mcp\Server\Tool as BaseTool;
-use Laravel\Mcp\Server\Tools\ToolResult;
 use Throwable;
 
 /**
@@ -14,12 +15,16 @@ use Throwable;
  *
  * Sits between Laravel\Mcp\Server\Tool and the concrete tool classes the
  * SDK writes to app/Mindum/Tools/. Centralizes:
- *   - Result wrapping (turning mixed PHP return values into ToolResult).
- *   - Exception → ToolResult::error conversion so the agent sees a clean
- *     error rather than a 500.
+ *   - Argument extraction (MCP Request → plain array for execute()).
+ *   - Result wrapping (turning mixed PHP return values into an MCP Response).
+ *   - Exception → error-Response conversion so the agent sees a clean error
+ *     result rather than a 500 from the MCP server.
  *
  * Generated tools override execute(array $input) with the handle_code
  * returned by the Mindum API. They never call handle() directly.
+ *
+ * Targets the laravel/mcp 0.5+ tool contract: handle(Request): Response and
+ * schema(JsonSchema): array (the latter emitted by ToolClassRenderer).
  */
 abstract class GeneratedTool extends BaseTool
 {
@@ -32,60 +37,58 @@ abstract class GeneratedTool extends BaseTool
     abstract protected function execute(array $input): mixed;
 
     /**
-     * MCP-protocol entry point. Always returns a ToolResult — never throws.
-     *
-     * @param  array<string, mixed>  $arguments
+     * MCP-protocol entry point. Always returns a Response — never throws — so a
+     * tool error surfaces as an isError result rather than a 500.
      */
-    public function handle(array $arguments): ToolResult
+    public function handle(Request $request): Response
     {
         try {
-            $result = $this->execute($arguments);
+            $result = $this->execute($request->all());
         } catch (Throwable $e) {
-            return ToolResult::error($this->formatException($e));
+            return Response::error($this->formatException($e));
         }
 
         return $this->wrapResult($result);
     }
 
     /**
-     * Convert a mixed PHP value into a ToolResult the MCP client can render.
+     * Convert a mixed PHP value into an MCP Response the client can render.
+     * Arrays / objects / Arrayables are JSON-encoded into a text response (the
+     * orchestrator parses the JSON back out); scalars become plain text.
      */
-    protected function wrapResult(mixed $value): ToolResult
+    protected function wrapResult(mixed $value): Response
     {
-        if ($value instanceof ToolResult) {
+        if ($value instanceof Response) {
             return $value;
         }
 
         if ($value === null) {
-            return ToolResult::text('null');
+            return Response::text('null');
         }
 
         if (is_bool($value)) {
-            return ToolResult::text($value ? 'true' : 'false');
+            return Response::text($value ? 'true' : 'false');
         }
 
         if (is_scalar($value)) {
-            return ToolResult::text((string) $value);
+            return Response::text((string) $value);
         }
 
         if ($value instanceof Arrayable) {
-            return ToolResult::json($value->toArray());
+            $value = $value->toArray();
         }
 
-        if (is_array($value)) {
-            return ToolResult::json($value);
+        if (is_array($value) || is_object($value)) {
+            $json = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            if ($json !== false) {
+                return Response::text($json);
+            }
+
+            return Response::text(is_object($value) ? $value::class : '(unrenderable result)');
         }
 
-        if (is_object($value)) {
-            $encoded = json_encode($value);
-            $decoded = $encoded !== false ? json_decode($encoded, true) : null;
-
-            return is_array($decoded)
-                ? ToolResult::json($decoded)
-                : ToolResult::text((string) get_class($value));
-        }
-
-        return ToolResult::text('(unrenderable result)');
+        return Response::text('(unrenderable result)');
     }
 
     private function formatException(Throwable $e): string

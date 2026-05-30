@@ -32,7 +32,7 @@ class ChatCommand extends Command
         $this->line('  For now, you can exercise a tool directly with tinker:');
         $this->line('    <fg=gray>php artisan tinker</>');
         $this->line('    <fg=gray>>>> $tool = app(\\'.config('mindum.tools_namespace').'\\ListPosts::class);</>');
-        $this->line('    <fg=gray>>>> $tool->handle([]);</>');
+        $this->line('    <fg=gray>>>> $tool->handle(new \\Laravel\\Mcp\\Request([]));</>');
         $this->newLine();
 
         return self::SUCCESS;

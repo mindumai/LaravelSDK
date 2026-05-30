@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 namespace Mindum\Laravel\Tests\Stubs\Mcp\Tools;
 
-use Laravel\Mcp\Server\Tools\ToolInputSchema;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Mindum\Laravel\Tools\GeneratedTool;
 
 class AddNumbersTool extends GeneratedTool
@@ -25,12 +25,15 @@ class AddNumbersTool extends GeneratedTool
         return 'Returns the sum of two integers.';
     }
 
-    public function schema(ToolInputSchema $schema): ToolInputSchema
+    /**
+     * @return array<string, JsonSchema>
+     */
+    public function schema(JsonSchema $schema): array
     {
-        $schema->raw('a', ['type' => 'integer'])->required();
-        $schema->raw('b', ['type' => 'integer'])->required();
-
-        return $schema;
+        return [
+            'a' => $schema->integer()->required(),
+            'b' => $schema->integer()->required(),
+        ];
     }
 
     /**
