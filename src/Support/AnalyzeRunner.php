@@ -46,28 +46,28 @@ class AnalyzeRunner
     /**
      * @param  callable(string $event, array<string,mixed> $data): void|null  $onStep
      * @param  callable(array<string,mixed> $partialJob): string|null  $onPartialDecision
-     *         Called when /current returns a failed-with-partial job. Must return
-     *         one of: 'download' | 'resume' | 'fresh' | 'cancel'. If null (e.g.
-     *         non-interactive CI), defaults to 'download' (safest per D-P-7).
+     *                                                                                     Called when /current returns a failed-with-partial job. Must return
+     *                                                                                     one of: 'download' | 'resume' | 'fresh' | 'cancel'. If null (e.g.
+     *                                                                                     non-interactive CI), defaults to 'download' (safest per D-P-7).
      * @param  callable(array<string,mixed> $estimate): bool|null  $onEstimateConfirm
-     *         Called after the scanner finishes but BEFORE the manifest is
-     *         submitted to the API. Receives an estimate ($candidate_count,
-     *         $estimated_batches, $estimated_seconds, $estimated_cost_usd,
-     *         $model) and returns true to proceed or false to cancel.
-     *         Per Phase E1 (Estimator) — no Anthropic spend until the
-     *         customer confirms. If null, auto-proceeds (e.g. non-interactive).
+     *                                                                                 Called after the scanner finishes but BEFORE the manifest is
+     *                                                                                 submitted to the API. Receives an estimate ($candidate_count,
+     *                                                                                 $estimated_batches, $estimated_seconds, $estimated_cost_usd,
+     *                                                                                 $model) and returns true to proceed or false to cancel.
+     *                                                                                 Per Phase E1 (Estimator) — no Anthropic spend until the
+     *                                                                                 customer confirms. If null, auto-proceeds (e.g. non-interactive).
      * @param  callable(array<string,mixed> $precheck): string|null  $onInsufficientCredit
-     *         MS7 — called when the precheck endpoint returns can_proceed=false.
-     *         The callback receives the full precheck payload (balance_cents,
-     *         reserve_required_cents, alternatives, topup_suggestion_cents,
-     *         upgrade_to) and must return ONE of:
-     *           - 'switch:<model>' — try the precheck again with a cheaper model
-     *           - 'topup'          — abort with a top-up hint
-     *           - 'upgrade'        — abort with an upgrade hint
-     *           - 'cancel'         — abort with a plain cancellation message
-     *         If null (non-interactive / CI), defaults to 'cancel' — we NEVER
-     *         spend Anthropic money the customer hasn't confirmed they can
-     *         afford.
+     *                                                                                      MS7 — called when the precheck endpoint returns can_proceed=false.
+     *                                                                                      The callback receives the full precheck payload (balance_cents,
+     *                                                                                      reserve_required_cents, alternatives, topup_suggestion_cents,
+     *                                                                                      upgrade_to) and must return ONE of:
+     *                                                                                      - 'switch:<model>' — try the precheck again with a cheaper model
+     *                                                                                      - 'topup'          — abort with a top-up hint
+     *                                                                                      - 'upgrade'        — abort with an upgrade hint
+     *                                                                                      - 'cancel'         — abort with a plain cancellation message
+     *                                                                                      If null (non-interactive / CI), defaults to 'cancel' — we NEVER
+     *                                                                                      spend Anthropic money the customer hasn't confirmed they can
+     *                                                                                      afford.
      */
     public function run(
         ?callable $onStep = null,
@@ -249,6 +249,7 @@ class AnalyzeRunner
 
                 if (str_starts_with($decision, 'switch:')) {
                     $resolvedModel = substr($decision, strlen('switch:'));
+
                     // Loop back into precheck with the new model.
                     continue;
                 }
