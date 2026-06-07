@@ -517,4 +517,3 @@ class MindumApiClient
         return (int) config('mindum.api_timeout_seconds', 30);
     }
 }
-   
