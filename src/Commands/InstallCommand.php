@@ -812,4 +812,3 @@ class InstallCommand extends Command
         $this->newLine();
     }
 }
-         
