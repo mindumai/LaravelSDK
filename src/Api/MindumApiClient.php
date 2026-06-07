@@ -509,7 +509,7 @@ class MindumApiClient
 
     private function baseUrl(): string
     {
-        return rtrim((string) config('mindum.api_url', 'https://mindum.online'), '/');
+        return rtrim((string) config('mindum.api_url', 'https://mindum.dev'), '/');
     }
 
     private function timeout(): int
@@ -517,3 +517,4 @@ class MindumApiClient
         return (int) config('mindum.api_timeout_seconds', 30);
     }
 }
+   

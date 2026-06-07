@@ -152,7 +152,7 @@ class InstallCommand extends Command
             // original error-and-exit so scripted runs don't hang on stdin.
             if (! $this->input->isInteractive() || $this->option('no-interaction')) {
                 $this->error('MINDUM_API_KEY is not set. Add it to your .env and re-run.');
-                $this->line('  Get a key at <fg=cyan>https://mindum.online</> (or use your existing one).');
+                $this->line('  Get a key at <fg=cyan>https://mindum.dev</> (or use your existing one).');
 
                 return false;
             }
@@ -192,7 +192,7 @@ class InstallCommand extends Command
     private function promptForApiKey(): bool
     {
         $this->line('<fg=yellow>!</> MINDUM_API_KEY is not set in your .env.');
-        $this->line('  Get one (or look up your existing one) at <fg=cyan>https://mindum.online/dashboard</>.');
+        $this->line('  Get one (or look up your existing one) at <fg=cyan>https://mindum.dev/dashboard</>.');
         $this->newLine();
 
         $apiKey = (string) $this->secret('Paste your Mindum API key (starts with mk_)');
@@ -606,7 +606,7 @@ class InstallCommand extends Command
      */
     private function renderDecisionHint(string $decision, array $precheck): void
     {
-        $apiUrl = rtrim((string) config('mindum.api_url', 'https://mindum.online'), '/');
+        $apiUrl = rtrim((string) config('mindum.api_url', 'https://mindum.dev'), '/');
 
         if ($decision === 'topup') {
             $this->newLine();
@@ -812,3 +812,4 @@ class InstallCommand extends Command
         $this->newLine();
     }
 }
+         
