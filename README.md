@@ -9,7 +9,7 @@ Install Mindum into any Laravel app to give your end users a conversational inte
 ## Requirements
 
 - PHP **8.2+**
-- Laravel **12+**
+- Laravel **10+** (CI-tested on 10, 12, and 13)
 - A Mindum account ([mindum.dev](https://mindum.dev)) for the API key
 - An Anthropic API key (only required during local `mindum:chat` testing; the hosted orchestrator handles it in production)
 
@@ -64,7 +64,7 @@ Modular apps (like Bagisto with `packages/Webkul/*/src/`) are supported via `sca
 
 Mindum sends only **structural metadata** to its API — class names, method signatures, type hints, docblocks, and validation rules. Your actual source code **never leaves your server**. Tool execution always runs locally in your Laravel app.
 
-See the [security notes in `SECURITY.md`](SECURITY.md) for details (coming soon).
+A detailed security policy (`SECURITY.md`) is coming soon.
 
 ## License
 
