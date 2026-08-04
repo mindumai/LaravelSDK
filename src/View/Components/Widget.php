@@ -29,11 +29,17 @@ use Illuminate\View\View;
  * Customer overrides via component attributes:
  *   <x-mindum::widget
  *       session-id="from-customer-auth-flow"
+ *       agent="refund-helper"
  *       :theme="['primary' => '#10b981']"
  *       position="bottom-left"
  *       welcome-message="Hi! What would you like to do?"
  *       :welcome-prompts="['Show my tasks', 'Create a project']"
  *   />
+ *
+ * `agent` (Scoped Agents) selects a dashboard-configured scoped agent by
+ * slug: a page-specific persona limited to a hand-picked set of tools.
+ * The slug travels browser → token proxy → orchestrator mint; an unknown
+ * or disabled slug degrades to the default widget rather than erroring.
  */
 class Widget extends Component
 {
@@ -49,6 +55,7 @@ class Widget extends Component
     public function __construct(
         ?string $sessionId = null,
         ?string $endUserId = null,
+        ?string $agent = null,
         array|Arrayable|null $theme = null,
         ?string $position = null,
         ?string $welcomeMessage = null,
@@ -76,6 +83,7 @@ class Widget extends Component
         $this->config = [
             'sessionId' => $sessionId ?? '',
             'endUserId' => $endUserId,
+            'agent' => ($agent !== null && trim($agent) !== '') ? trim($agent) : null,
             'tokenEndpoint' => $tokenEndpoint === '' ? null : '/'.ltrim($tokenEndpoint, '/'),
             'apiUrl' => rtrim((string) config('mindum.api_url', ''), '/'),
             'wsUrl' => (string) config('mindum.widget.ws_url', ''),

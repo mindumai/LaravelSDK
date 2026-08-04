@@ -36,6 +36,9 @@ class WidgetTokenController extends Controller
             $validated = $request->validate([
                 'session_id' => ['required', 'string', 'min:1', 'max:128'],
                 'end_user_id' => ['nullable', 'string', 'max:128'],
+                // Scoped Agents — slug from <x-mindum::widget agent="…" />,
+                // forwarded to the orchestrator which resolves or degrades it.
+                'agent' => ['nullable', 'string', 'max:64'],
             ]);
         } catch (ValidationException $e) {
             return response()->json([
@@ -48,6 +51,7 @@ class WidgetTokenController extends Controller
             $minted = $this->proxy->mint(
                 $validated['session_id'],
                 $validated['end_user_id'] ?? null,
+                $validated['agent'] ?? null,
             );
         } catch (WidgetTokenMintException $e) {
             $httpStatus = $e->reason === 'rejected' ? 502 : 503;

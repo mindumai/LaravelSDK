@@ -37,7 +37,7 @@ class WidgetTokenProxy
      *
      * @throws WidgetTokenMintException
      */
-    public function mint(string $sessionId, ?string $endUserId = null): array
+    public function mint(string $sessionId, ?string $endUserId = null, ?string $agent = null): array
     {
         $apiKey = (string) config('mindum.api_key', '');
         if ($apiKey === '') {
@@ -51,6 +51,12 @@ class WidgetTokenProxy
         $payload = ['session_id' => $sessionId];
         if ($endUserId !== null && $endUserId !== '') {
             $payload['end_user_id'] = $endUserId;
+        }
+        // Scoped Agents — forwarded verbatim; the orchestrator resolves
+        // the slug within the key's project or degrades to the default
+        // widget on unknown/disabled slugs.
+        if ($agent !== null && $agent !== '') {
+            $payload['agent'] = $agent;
         }
 
         try {
