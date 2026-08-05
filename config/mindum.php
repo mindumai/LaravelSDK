@@ -148,6 +148,10 @@ return [
         // widget's default accent for every install that never themed.)
         'theme' => [
             'primary' => env('MINDUM_WIDGET_PRIMARY'),
+            // W6.5 — 'pill' (centered ask-anything bar, widget default)
+            // or 'bubble' (classic corner button). NULL = widget default;
+            // the dashboard Theming page can override either way at mint.
+            'launcher' => env('MINDUM_WIDGET_LAUNCHER'),
         ],
 
         'position' => env('MINDUM_WIDGET_POSITION', 'bottom-right'),
