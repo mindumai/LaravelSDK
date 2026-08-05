@@ -87,7 +87,13 @@ class Widget extends Component
             'tokenEndpoint' => $tokenEndpoint === '' ? null : '/'.ltrim($tokenEndpoint, '/'),
             'apiUrl' => rtrim((string) config('mindum.api_url', ''), '/'),
             'wsUrl' => (string) config('mindum.widget.ws_url', ''),
-            'theme' => array_merge($baseTheme, $themeArray),
+            // Drop null entries (e.g. the unset primary default) so the
+            // bootstrap only carries real overrides and the widget's own
+            // defaults apply cleanly.
+            'theme' => array_filter(
+                array_merge($baseTheme, $themeArray),
+                static fn ($v) => $v !== null,
+            ),
             'position' => $position ?? (string) config('mindum.widget.position', 'bottom-right'),
             'welcome' => [
                 'message' => $welcomeMessageResolved,

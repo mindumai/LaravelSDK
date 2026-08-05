@@ -139,8 +139,15 @@ return [
 
         // Visual configuration passed through to the widget bundle. Customers
         // can override any of these via attributes on <x-mindum::widget />.
+        //
+        // `primary` defaults to NULL (no override): the widget then uses
+        // its own designed warm-amber palette, and the dashboard Theming
+        // page stays the one place look-and-feel is decided. Set this env
+        // only to hard-pin a brand color from the customer's server side.
+        // (Pre-W6 this defaulted to #0F172A, which silently overrode the
+        // widget's default accent for every install that never themed.)
         'theme' => [
-            'primary' => env('MINDUM_WIDGET_PRIMARY', '#0F172A'),
+            'primary' => env('MINDUM_WIDGET_PRIMARY'),
         ],
 
         'position' => env('MINDUM_WIDGET_POSITION', 'bottom-right'),
