@@ -10,7 +10,6 @@ declare(strict_types=1);
 
 namespace Mindum\Laravel\Tests\Stubs\Mcp\Tools;
 
-use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Mindum\Laravel\Tools\GeneratedTool;
 
 class AddNumbersTool extends GeneratedTool
@@ -26,13 +25,17 @@ class AddNumbersTool extends GeneratedTool
     }
 
     /**
-     * @return array<string, JsonSchema>
+     * @return array<string, mixed>
      */
-    public function schema(JsonSchema $schema): array
+    public function inputSchema(): array
     {
         return [
-            'a' => $schema->integer()->required(),
-            'b' => $schema->integer()->required(),
+            'type' => 'object',
+            'properties' => [
+                'a' => ['type' => 'integer'],
+                'b' => ['type' => 'integer'],
+            ],
+            'required' => ['a', 'b'],
         ];
     }
 

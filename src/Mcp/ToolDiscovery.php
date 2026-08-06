@@ -9,8 +9,8 @@ use Mindum\Laravel\Tools\GeneratedTool;
 /**
  * Discovers the GeneratedTool subclasses installed at `mindum.tools_path`.
  *
- * Shared between MindumMcpServer (which must registers them at boot) and
- * StatusCommand (which reports how many are wired up).
+ * Shared between McpController (which serves them over tools/list and
+ * tools/call) and StatusCommand (which reports how many are wired up).
  *
  * A file is only considered a tool when:
  *   - it lives directly in `tools_path` (no recursion),

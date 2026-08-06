@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace Mindum\Laravel\Tests\Feature\Mcp;
 
-use Laravel\Mcp\Server\McpServiceProvider;
 use Mindum\Laravel\Http\Middleware\VerifyMcpSecret;
 use Mindum\Laravel\MindumServiceProvider;
 use Orchestra\Testbench\TestCase;
 
 /**
- * Phase 2A — end-to-end coverage of the MCP HTTP endpoint exposed by the SDK.
+ * Phase 2A / SDKM-D4 — end-to-end coverage of the MCP HTTP endpoint the
+ * SDK exposes. This suite predates the own-MCP refactor and survived it
+ * unchanged except for dropping the laravel/mcp provider — which is the
+ * point: it locks the wire contract the orchestrator's McpClient speaks,
+ * so any drift in envelope shape, error codes, or auth behavior fails
+ * here before it can break a customer install.
  *
  * The fixture tools at tests/Stubs/Mcp/Tools/ stand in for what the SDK
  * would generate in a real customer app. By pointing `mindum.tools_path` and
@@ -26,11 +30,7 @@ class McpServerTest extends TestCase
 
     protected function getPackageProviders($app): array
     {
-        // laravel/mcp's provider binds the Registrar (for Mcp::web) and the
-        // resolving hook that populates the injected Request — both required
-        // for the 0.5+ HTTP server to work. Testbench doesn't auto-discover,
-        // so it must be listed explicitly alongside ours.
-        return [McpServiceProvider::class, MindumServiceProvider::class];
+        return [MindumServiceProvider::class];
     }
 
     protected function defineEnvironment($app): void
@@ -77,6 +77,60 @@ class McpServerTest extends TestCase
         $this->assertSame('Echoes the `message` input back, prefixed with "echo: ".', $echo['description']);
         $this->assertSame(['message'], $echo['inputSchema']['required']);
         $this->assertSame('string', $echo['inputSchema']['properties']['message']['type']);
+    }
+
+    public function test_tools_list_paginates_with_opaque_cursor(): void
+    {
+        // McpClient walks nextCursor until exhaustion; per_page=1 forces two
+        // pages out of the two fixture tools.
+        $first = $this->postJson(self::ENDPOINT, [
+            'jsonrpc' => '2.0',
+            'method' => 'tools/list',
+            'params' => ['per_page' => 1],
+            'id' => 1,
+        ], [VerifyMcpSecret::HEADER => self::SECRET])->assertOk();
+
+        $this->assertCount(1, $first->json('result.tools'));
+        $cursor = $first->json('result.nextCursor');
+        $this->assertNotNull($cursor);
+
+        $second = $this->postJson(self::ENDPOINT, [
+            'jsonrpc' => '2.0',
+            'method' => 'tools/list',
+            'params' => ['per_page' => 1, 'cursor' => $cursor],
+            'id' => 2,
+        ], [VerifyMcpSecret::HEADER => self::SECRET])->assertOk();
+
+        $this->assertCount(1, $second->json('result.tools'));
+        $this->assertNull($second->json('result.nextCursor'));
+        $this->assertNotSame(
+            $first->json('result.tools.0.name'),
+            $second->json('result.tools.0.name'),
+        );
+    }
+
+    public function test_initialize_is_answered_not_method_not_found(): void
+    {
+        $response = $this->postJson(self::ENDPOINT, [
+            'jsonrpc' => '2.0',
+            'method' => 'initialize',
+            'params' => [],
+            'id' => 3,
+        ], [VerifyMcpSecret::HEADER => self::SECRET])->assertOk();
+
+        $this->assertNull($response->json('error'));
+        $this->assertSame('Mindum', $response->json('result.serverInfo.name'));
+    }
+
+    public function test_unknown_method_returns_method_not_found(): void
+    {
+        $response = $this->postJson(self::ENDPOINT, [
+            'jsonrpc' => '2.0',
+            'method' => 'resources/list',
+            'id' => 4,
+        ], [VerifyMcpSecret::HEADER => self::SECRET])->assertOk();
+
+        $this->assertSame(-32601, $response->json('error.code'));
     }
 
     public function test_tools_call_executes_tool_and_returns_text_result(): void

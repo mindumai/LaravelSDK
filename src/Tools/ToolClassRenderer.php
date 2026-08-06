@@ -14,10 +14,12 @@ use InvalidArgumentException;
  * `// @mindum-generated`. ToolWriter uses this marker to identify
  * SDK-owned files during rescan orphan cleanup (Option B header marker).
  *
- * Generated classes extend Mindum\Laravel\Tools\GeneratedTool which in
- * turn extends Laravel\Mcp\Server\Tool. The intermediate GeneratedTool
- * provides result-wrapping (PHP mixed → ToolResult) so handle_code
- * snippets can just `return` whatever they want.
+ * Generated classes extend Mindum\Laravel\Tools\GeneratedTool — the SDK's
+ * own, framework-free tool base (SDKM-D2: emitted code must run on
+ * Laravel 9 / PHP 8.1, so no Illuminate JsonSchema contract and no
+ * builder chains; the input schema is embedded as a plain PHP array).
+ * GeneratedTool provides result-wrapping so handle_code snippets can
+ * just `return` whatever they want.
  */
 class ToolClassRenderer
 {
@@ -81,7 +83,6 @@ declare(strict_types=1);
 
 namespace {$namespace};
 
-use Illuminate\\Contracts\\JsonSchema\\JsonSchema;
 use Mindum\\Laravel\\Tools\\GeneratedTool;
 
 class {$className} extends GeneratedTool
@@ -96,11 +97,12 @@ class {$className} extends GeneratedTool
         return {$descriptionLiteral};
     }
 
-    public function schema(JsonSchema \$schema): array
+    /**
+     * @return array<string, mixed>
+     */
+    public function inputSchema(): array
     {
-        return [
-{$schemaBody}
-        ];
+        return {$schemaBody};
     }
 
     /**
@@ -145,81 +147,58 @@ PHP;
      *
      * @param  array<string, mixed>  $inputSchema
      */
+    /**
+     * Render the tool's JSON Schema as a PHP array literal for the
+     * generated inputSchema() body (SDKM-D2 — plain arrays, no builder,
+     * no Illuminate contracts; the wire format wants the raw schema
+     * anyway). Normalizes the top level to `type: object` and keeps only
+     * the members the orchestrator forwards to Anthropic.
+     *
+     * @param  array<string, mixed>  $inputSchema
+     */
     private function renderSchemaBody(array $inputSchema): string
     {
-        $properties = is_array($inputSchema['properties'] ?? null) ? $inputSchema['properties'] : [];
-        $required = is_array($inputSchema['required'] ?? null) ? $inputSchema['required'] : [];
+        $schema = ['type' => 'object'];
 
-        if ($properties === []) {
-            return '            // No input fields.';
+        $properties = is_array($inputSchema['properties'] ?? null) ? $inputSchema['properties'] : [];
+        if ($properties !== []) {
+            $schema['properties'] = $properties;
         }
+
+        $required = is_array($inputSchema['required'] ?? null) ? array_values($inputSchema['required']) : [];
+        if ($required !== []) {
+            $schema['required'] = $required;
+        }
+
+        return $this->exportArray($schema, 2);
+    }
+
+    /**
+     * Recursively export a value as short-syntax PHP source, indented to
+     * sit inside the generated method at the given depth (4-space units).
+     * List arrays drop their numeric keys.
+     */
+    private function exportArray(mixed $value, int $depth): string
+    {
+        if (! is_array($value)) {
+            return var_export($value, true);
+        }
+
+        if ($value === []) {
+            return '[]';
+        }
+
+        $pad = str_repeat('    ', $depth + 1);
+        $closePad = str_repeat('    ', $depth);
+        $isList = array_keys($value) === range(0, count($value) - 1);
 
         $lines = [];
-        foreach ($properties as $name => $schema) {
-            $name = (string) $name;
-            $builder = $this->renderPropertyBuilder(is_array($schema) ? $schema : [], in_array($name, $required, true));
-            $lines[] = '            '.$this->phpStringLiteral($name).' => '.$builder.',';
+        foreach ($value as $key => $item) {
+            $prefix = $isList ? '' : var_export($key, true).' => ';
+            $lines[] = $pad.$prefix.$this->exportArray($item, $depth + 1).',';
         }
 
-        return implode("\n", $lines);
-    }
-
-    /**
-     * Render one property's JsonSchema builder chain from its JSON Schema
-     * definition. Maps scalar/array types to the typed builder; anything
-     * exotic (object/nested/multi-type/missing) falls back to string() so the
-     * tool always loads. Modifiers (description/enum/default/required) are
-     * appended only when present.
-     *
-     * @param  array<string, mixed>  $schema
-     */
-    private function renderPropertyBuilder(array $schema, bool $required): string
-    {
-        $type = is_string($schema['type'] ?? null) ? $schema['type'] : '';
-
-        $call = match ($type) {
-            'integer' => '$schema->integer()',
-            'number' => '$schema->number()',
-            'boolean' => '$schema->boolean()',
-            'array' => '$schema->array()',
-            default => '$schema->string()',
-        };
-
-        if (isset($schema['description']) && is_string($schema['description']) && $schema['description'] !== '') {
-            $call .= '->description('.$this->phpStringLiteral($schema['description']).')';
-        }
-
-        if (isset($schema['enum']) && is_array($schema['enum']) && $schema['enum'] !== []) {
-            $call .= '->enum('.$this->exportArrayInline(array_values($schema['enum'])).')';
-        }
-
-        if (array_key_exists('default', $schema) && is_scalar($schema['default'])) {
-            $call .= '->default('.var_export($schema['default'], true).')';
-        }
-
-        if ($required) {
-            $call .= '->required()';
-        }
-
-        return $call;
-    }
-
-    /**
-     * Inline-export an array using var_export but compress whitespace so it
-     * fits on a single line (or two) in the generated source.
-     *
-     * @param  array<string, mixed>  $value
-     */
-    private function exportArrayInline(array $value): string
-    {
-        $exported = var_export($value, true);
-        // var_export emits "array (\n  'k' => 'v',\n)" — collapse to short syntax
-        // and trim trailing commas before closing brackets.
-        $exported = preg_replace('/\s+/', ' ', $exported) ?? $exported;
-        $exported = str_replace(['array (', ')'], ['[', ']'], $exported);
-        $exported = preg_replace('/, ]/', ']', $exported) ?? $exported;
-
-        return $exported;
+        return "[\n".implode("\n", $lines)."\n".$closePad.']';
     }
 
     /**

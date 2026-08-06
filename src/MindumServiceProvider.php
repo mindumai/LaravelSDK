@@ -7,14 +7,13 @@ namespace Mindum\Laravel;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
-use Laravel\Mcp\Facades\Mcp;
 use Mindum\Laravel\Commands\ChatCommand;
 use Mindum\Laravel\Commands\InstallCommand;
 use Mindum\Laravel\Commands\RescanCommand;
 use Mindum\Laravel\Commands\StatusCommand;
+use Mindum\Laravel\Http\Controllers\McpController;
 use Mindum\Laravel\Http\Controllers\WidgetTokenController;
 use Mindum\Laravel\Http\Middleware\VerifyMcpSecret;
-use Mindum\Laravel\Mcp\MindumMcpServer;
 use Mindum\Laravel\View\Components\Widget;
 
 /**
@@ -83,12 +82,11 @@ class MindumServiceProvider extends ServiceProvider
             return;
         }
 
-        // laravel/mcp 0.5+ — Mcp::web() registers the spec-required GET (405)
-        // plus the POST route and builds the HttpTransport (request, session-id)
-        // internally, replacing the hand-rolled transport wiring that broke when
-        // HttpTransport's constructor gained required arguments. We layer the
-        // shared-secret guard on top and name the POST route for route:list.
-        Mcp::web($endpoint, MindumMcpServer::class)
+        // SDKM-D1 (Docs/SDK_Own_MCP_Plan.md) — the SDK's own controller
+        // speaks the wire protocol; no framework MCP package. The secret
+        // guard stays in front, and the route name is kept for route:list
+        // continuity with pre-SDKM installs.
+        Route::post($endpoint, McpController::class)
             ->middleware(VerifyMcpSecret::class)
             ->name('mindum.mcp');
     }

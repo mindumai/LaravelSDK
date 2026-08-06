@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Mindum\Laravel\Support;
 
 use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Support\Sleep;
 use Mindum\Laravel\Api\MindumApiClient;
 use Mindum\Laravel\Scanner\Scanner;
 use Mindum\Laravel\Tools\ToolWriter;
@@ -323,7 +322,7 @@ class AnalyzeRunner
         $backoffMs = self::POLL_BACKOFF_INITIAL_MS;
 
         while (true) {
-            Sleep::for($backoffMs)->milliseconds();
+            Sleeper::milliseconds($backoffMs);
 
             $job = $this->client->pollJob($jobId);
 

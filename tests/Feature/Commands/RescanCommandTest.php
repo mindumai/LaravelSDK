@@ -7,8 +7,8 @@ namespace Mindum\Laravel\Tests\Feature\Commands;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Sleep;
 use Mindum\Laravel\MindumServiceProvider;
+use Mindum\Laravel\Support\Sleeper;
 use Orchestra\Testbench\TestCase;
 
 class RescanCommandTest extends TestCase
@@ -40,7 +40,7 @@ class RescanCommandTest extends TestCase
     {
         parent::setUp();
         $this->files = new Filesystem;
-        Sleep::fake();
+        Sleeper::fake();
     }
 
     protected function tearDown(): void

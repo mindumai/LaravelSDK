@@ -41,9 +41,16 @@ jobs:
         php: ['8.2', '8.3', '8.4', '8.5']
         laravel: ['12.*', '13.*']
         include:
-          # Laravel 10 support (resolves laravel/mcp to the 0.5.x line).
-          # L10 tops out at PHP 8.3, so pin a known-good combo via include
-          # rather than widening the cross-product into invalid pairs.
+          # SDKM-D2 (Docs/SDK_Own_MCP_Plan.md) — the floor is Laravel 9 /
+          # PHP 8.1 now that the MCP layer is our own. Each older Laravel
+          # line gets a floor-PHP and a ceiling-PHP leg; invalid pairs are
+          # pinned via include rather than widening the cross-product.
+          - php: '8.1'
+            laravel: '9.*'
+          - php: '8.2'
+            laravel: '9.*'
+          - php: '8.1'
+            laravel: '10.*'
           - php: '8.3'
             laravel: '10.*'
           - php: '8.2'
@@ -65,8 +72,12 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Laravel 9 is EOL and carries known advisories; Composer refuses
+          # to resolve it by default. Testing against it is the whole point
+          # of that matrix leg (SDKM-D2), so lift the policy for CI installs.
+          composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-interaction --no-update
-          composer install --no-interaction --no-progress --prefer-dist
+          composer update --no-interaction --no-progress --prefer-dist
 
       - name: Run PHPUnit
         run: vendor/bin/phpunit --display-deprecations

@@ -7,8 +7,8 @@ namespace Mindum\Laravel\Tests\Feature\Commands;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Sleep;
 use Mindum\Laravel\MindumServiceProvider;
+use Mindum\Laravel\Support\Sleeper;
 use Orchestra\Testbench\TestCase;
 
 /**
@@ -17,7 +17,7 @@ use Orchestra\Testbench\TestCase;
  * attach to, completed job to download) plus failure modes.
  *
  * Each fake matches on URL+method to route the worker through the right
- * response. Sleep::fake() skips the SDK's poll backoff so tests run
+ * response. Sleeper::fake() skips the SDK's poll backoff so tests run
  * instantly.
  */
 class InstallCommandTest extends TestCase
@@ -50,7 +50,7 @@ class InstallCommandTest extends TestCase
     {
         parent::setUp();
         $this->files = new Filesystem;
-        Sleep::fake();
+        Sleeper::fake();
     }
 
     protected function tearDown(): void

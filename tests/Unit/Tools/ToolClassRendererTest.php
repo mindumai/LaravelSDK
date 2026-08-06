@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mindum\Laravel\Tests\Unit\Tools;
 
+use Mindum\Laravel\Tools\GeneratedTool;
 use Mindum\Laravel\Tools\ToolClassRenderer;
 use PHPUnit\Framework\TestCase;
 
@@ -68,9 +69,10 @@ class ToolClassRendererTest extends TestCase
         $this->assertStringContainsString('class CreatePost extends GeneratedTool', $output['source']);
         $this->assertStringContainsString('public function name(): string', $output['source']);
         $this->assertStringContainsString('public function description(): string', $output['source']);
-        // laravel/mcp 0.5+/0.7 API: schema(JsonSchema $schema): array.
-        $this->assertStringContainsString('use Illuminate\\Contracts\\JsonSchema\\JsonSchema;', $output['source']);
-        $this->assertStringContainsString('public function schema(JsonSchema $schema): array', $output['source']);
+        // SDKM-D2: plain-array inputSchema(), no Illuminate contracts —
+        // emitted code must load on Laravel 9 / PHP 8.1.
+        $this->assertStringNotContainsString('JsonSchema', $output['source']);
+        $this->assertStringContainsString('public function inputSchema(): array', $output['source']);
         $this->assertStringContainsString('protected function execute(array $input): mixed', $output['source']);
     }
 
@@ -88,36 +90,39 @@ class ToolClassRendererTest extends TestCase
         );
     }
 
-    public function test_schema_emits_required_calls_for_required_fields(): void
+    public function test_schema_round_trips_through_the_generated_class(): void
     {
-        $renderer = new ToolClassRenderer;
+        $renderer = new ToolClassRenderer(namespace: 'MindumRendererRoundTrip');
 
-        $output = $renderer->render($this->minimalTool([
-            'input_schema' => [
-                'type' => 'object',
-                'properties' => [
-                    'title' => ['type' => 'string', 'maxLength' => 255],
-                    'body' => ['type' => 'string'],
-                    'tags' => ['type' => 'array'],
-                ],
-                'required' => ['title', 'body'],
+        $inputSchema = [
+            'type' => 'object',
+            'properties' => [
+                'title' => ['type' => 'string', 'maxLength' => 255],
+                'body' => ['type' => 'string'],
+                'tags' => ['type' => 'array'],
             ],
-        ]));
+            'required' => ['title', 'body'],
+        ];
 
-        // New API emits a property-name => typed-builder map: each property is
-        // `'name' => $schema->TYPE()...`, with ->required() appended for the
-        // ones listed in `required`.
-        $this->assertStringContainsString("'title' => \$schema->string()", $output['source']);
-        $this->assertStringContainsString("'body' => \$schema->string()", $output['source']);
-        $this->assertStringContainsString("'tags' => \$schema->array()", $output['source']);
+        $output = $renderer->render($this->minimalTool(['input_schema' => $inputSchema]));
 
-        // title and body must be required; tags must not.
-        $this->assertMatchesRegularExpression("/'title' => \\\$schema->.+->required\(\)/", $output['source']);
-        $this->assertMatchesRegularExpression("/'body' => \\\$schema->.+->required\(\)/", $output['source']);
-        $this->assertDoesNotMatchRegularExpression("/'tags' => \\\$schema->.+->required\(\)/", $output['source']);
+        // The strongest possible assertion: load the emitted class and check
+        // inputSchema() returns the manifest's schema byte-for-byte. This is
+        // what tools/list serves the orchestrator (SDKM-D4).
+        $tmp = tempnam(sys_get_temp_dir(), 'mindum_schema_').'.php';
+        file_put_contents($tmp, $output['source']);
+        require $tmp;
+        @unlink($tmp);
+
+        $fqcn = 'MindumRendererRoundTrip\\CreatePost';
+        $this->assertTrue(class_exists($fqcn, false));
+
+        /** @var GeneratedTool $tool */
+        $tool = new $fqcn;
+        $this->assertSame($inputSchema, $tool->inputSchema());
     }
 
-    public function test_no_input_fields_produces_placeholder_comment(): void
+    public function test_schema_with_no_fields_emits_bare_object_schema(): void
     {
         $renderer = new ToolClassRenderer;
 
@@ -125,7 +130,7 @@ class ToolClassRendererTest extends TestCase
             'input_schema' => ['type' => 'object', 'properties' => [], 'required' => []],
         ]));
 
-        $this->assertStringContainsString('// No input fields.', $output['source']);
+        $this->assertStringContainsString("return [\n            'type' => 'object',\n        ];", $output['source']);
     }
 
     public function test_provenance_lines_appear_when_metadata_present(): void
