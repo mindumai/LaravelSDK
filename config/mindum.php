@@ -126,6 +126,20 @@ return [
     'widget' => [
         'token_endpoint' => env('MINDUM_WIDGET_TOKEN_ENDPOINT', '/mindum/widget/token'),
 
+        // SDKM-D5 — middleware applied to the auto-registered token route.
+        // The mint endpoint is the widget's real access boundary: put the
+        // SAME middleware here that guards the pages the widget sits on
+        // (e.g. "web,auth" or "web,auth,can:admin-access"), and non-
+        // authorized users can't mint chat tokens even by calling the
+        // route directly. Comma-separated in env; empty = public route
+        // (the pre-D5 behavior). Apps that need a different idiom can
+        // skip auto-registration (empty token_endpoint) and expose their
+        // own route calling Widget\WidgetTokenProxy::mint().
+        'token_middleware' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('MINDUM_WIDGET_TOKEN_MIDDLEWARE', '')),
+        ))),
+
         // The widget JS bundle URL. Served from the Mindum orchestrator's
         // own domain for now; can be migrated to a dedicated CDN
         // (cdn.mindum.dev or jsDelivr) later without customer changes.

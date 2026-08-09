@@ -114,6 +114,14 @@ class MindumServiceProvider extends ServiceProvider
             return;
         }
 
-        Route::post($endpoint, WidgetTokenController::class)->name('mindum.widget.token');
+        // SDKM-D5 — the token route is the widget's enforcement boundary.
+        // Customers guard minting with their own auth middleware via
+        // mindum.widget.token_middleware; empty list keeps the route
+        // public (visibility-only gating via embed placement).
+        $middleware = (array) config('mindum.widget.token_middleware', []);
+
+        Route::post($endpoint, WidgetTokenController::class)
+            ->middleware($middleware)
+            ->name('mindum.widget.token');
     }
 }
