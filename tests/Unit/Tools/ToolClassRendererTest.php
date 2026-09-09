@@ -148,6 +148,33 @@ class ToolClassRendererTest extends TestCase
         $this->assertStringContainsString('// Default enabled: true', $output['source']);
     }
 
+    public function test_operation_type_is_emitted_as_a_declared_method(): void
+    {
+        $renderer = new ToolClassRenderer;
+
+        $output = $renderer->render($this->minimalTool(['operation_type' => 'write']));
+
+        $this->assertStringContainsString("public function operationType(): ?string\n    {\n        return 'write';", $output['source']);
+        $this->assertSame(0, (int) shell_exec('php -l '.escapeshellarg($this->writeTemp($output['source'])).' > /dev/null 2>&1; echo $?'));
+    }
+
+    public function test_unknown_operation_type_is_not_emitted_as_a_method(): void
+    {
+        $renderer = new ToolClassRenderer;
+
+        $output = $renderer->render($this->minimalTool(['operation_type' => 'mutate']));
+
+        $this->assertStringNotContainsString('function operationType', $output['source']);
+    }
+
+    private function writeTemp(string $source): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'mindum_tool_');
+        file_put_contents($path, $source);
+
+        return $path;
+    }
+
     public function test_custom_namespace_is_honored(): void
     {
         $renderer = new ToolClassRenderer(namespace: 'Acme\\Foo\\Tools');

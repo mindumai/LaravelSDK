@@ -11,6 +11,7 @@ use Mindum\Laravel\Commands\ChatCommand;
 use Mindum\Laravel\Commands\InstallCommand;
 use Mindum\Laravel\Commands\RescanCommand;
 use Mindum\Laravel\Commands\StatusCommand;
+use Mindum\Laravel\Commands\SyncToolsCommand;
 use Mindum\Laravel\Http\Controllers\McpController;
 use Mindum\Laravel\Http\Controllers\WidgetTokenController;
 use Mindum\Laravel\Http\Middleware\VerifyMcpSecret;
@@ -63,6 +64,7 @@ class MindumServiceProvider extends ServiceProvider
             RescanCommand::class,
             StatusCommand::class,
             ChatCommand::class,
+            SyncToolsCommand::class,
         ]);
     }
 

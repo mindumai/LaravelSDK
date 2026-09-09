@@ -443,6 +443,27 @@ class MindumApiClient
     }
 
     /**
+     * POST /api/tools/sync — register the app's installed tool classes with
+     * the orchestrator without a scan (CC-D2, Docs/Concierge_Chat_Plan.md).
+     *
+     * @param  list<array{name: string, description: string, input_schema: array<string, mixed>, operation_type: string, source_class?: string}>  $tools
+     * @return array{synced: int, created: int, updated: int, disabled: list<string>}
+     */
+    public function syncTools(array $tools): array
+    {
+        $payload = $this->request('POST', '/api/tools/sync', ['tools' => $tools]);
+
+        $disabled = is_array($payload['disabled'] ?? null) ? array_values(array_map('strval', $payload['disabled'])) : [];
+
+        return [
+            'synced' => (int) ($payload['synced'] ?? 0),
+            'created' => (int) ($payload['created'] ?? 0),
+            'updated' => (int) ($payload['updated'] ?? 0),
+            'disabled' => $disabled,
+        ];
+    }
+
+    /**
      * Shared request plumbing for non-204 endpoints. Returns the decoded
      * JSON body or throws RuntimeException with a human-readable message.
      *

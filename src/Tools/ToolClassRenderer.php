@@ -55,6 +55,23 @@ class ToolClassRenderer
         $descriptionLiteral = $this->phpStringLiteral($description);
         $nameLiteral = $this->phpStringLiteral($toolName);
 
+        // CC-D3: the analyzer's verdict becomes a declared method, so the
+        // orchestrator gates on it rather than on the tool's name. Omitted
+        // when the analyzer gave none — the base class then returns null and
+        // `mindum:sync-tools` will ask for it.
+        $operationTypeMethod = '';
+        if ($operationType !== null && in_array($operationType, GeneratedTool::OPERATION_TYPES, true)) {
+            $operationTypeLiteral = $this->phpStringLiteral($operationType);
+            $operationTypeMethod = <<<PHP
+
+    public function operationType(): ?string
+    {
+        return {$operationTypeLiteral};
+    }
+
+PHP;
+        }
+
         $provenanceLines = [];
         if ($sourceClass !== null) {
             $provenanceLines[] = '// Source class: '.$sourceClass;
@@ -96,7 +113,7 @@ class {$className} extends GeneratedTool
     {
         return {$descriptionLiteral};
     }
-
+{$operationTypeMethod}
     /**
      * @return array<string, mixed>
      */

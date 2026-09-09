@@ -27,9 +27,33 @@ use Throwable;
  */
 abstract class GeneratedTool
 {
+    public const OPERATION_READ = 'read';
+
+    public const OPERATION_WRITE = 'write';
+
+    public const OPERATION_DELETE = 'delete';
+
+    /** @var list<string> */
+    public const OPERATION_TYPES = [self::OPERATION_READ, self::OPERATION_WRITE, self::OPERATION_DELETE];
+
     abstract public function name(): string;
 
     abstract public function description(): string;
+
+    /**
+     * What this tool does to the customer's data: `read`, `write` or
+     * `delete` (CC-D3, Docs/Concierge_Chat_Plan.md). The orchestrator's
+     * confirmation gate reads the value `mindum:sync-tools` reports, so a
+     * write tool with a read-looking name is still gated.
+     *
+     * Null means "not declared". Generated tools carry the analyzer's
+     * verdict; hand-written tools MUST override this — `mindum:sync-tools`
+     * refuses to sync a tool that has not declared it.
+     */
+    public function operationType(): ?string
+    {
+        return null;
+    }
 
     /**
      * JSON Schema for the tool's input, as a plain array. Generated tools
