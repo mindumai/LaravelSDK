@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-11
+
+### Added
+
+- **`mindum:sync-tools`** — registers the tool classes installed in
+  `app/Mindum/Tools` with the orchestrator without running a scan, so
+  hand-written tools appear in the dashboard with enable/disable and
+  description overrides. Refuses to run while any tool has not declared
+  its operation type. `--dry-run` lists what would be sent.
+- **`GeneratedTool::operationType()`** — every tool declares `read`,
+  `write` or `delete`. The orchestrator's confirmation gate reads this
+  value ahead of the tool-name heuristic, so a write tool with a
+  read-looking name is still confirmed. Generated tools carry the
+  analyzer's verdict; hand-written tools must declare it.
+
+
 ### Changed
 
 - **Async analyze pipeline.** `mindum:install` and `mindum:rescan` now use
